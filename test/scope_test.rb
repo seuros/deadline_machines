@@ -18,6 +18,25 @@ module DeadlineMachines
       assert_nil DeadlineMachines.current
     end
 
+    def test_a_nested_scope_without_a_limit_inherits_the_ambient_budget
+      DeadlineMachines.with_deadline(5) do |outer|
+        DeadlineMachines.with_deadline do |inner|
+          refute_same outer, inner
+          assert_in_delta 5.0, inner.remaining
+        end
+      end
+    end
+
+    def test_a_nested_scope_without_a_limit_still_sees_cancellation
+      DeadlineMachines.with_deadline(5) do |outer|
+        DeadlineMachines.with_deadline do |inner|
+          outer.cancel('client hung up')
+
+          assert_raises(Cancelled) { inner.check! }
+        end
+      end
+    end
+
     def test_a_nested_scope_cannot_widen_the_budget
       DeadlineMachines.with_deadline(1) do
         DeadlineMachines.with_deadline(60) do

@@ -21,7 +21,7 @@ module DeadlineMachines
 
     def with_deadline(seconds = nil, &block)
       ambient = current
-      return ambient.derive(seconds) { |child| bind(child, &block) } if ambient && seconds
+      return ambient.derive(seconds) { |child| bind(child, &block) } if ambient
       return bind(Deadline.after(seconds, clock: clock), &block) if seconds
 
       bind(Deadline.never(clock: clock), &block)
