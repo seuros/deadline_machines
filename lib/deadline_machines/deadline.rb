@@ -16,7 +16,7 @@ module DeadlineMachines
       end
 
       def to_ns(seconds)
-        (seconds.to_f * NS_PER_SECOND).round
+        (seconds.to_r * NS_PER_SECOND).round
       end
     end
 

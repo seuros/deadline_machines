@@ -15,7 +15,7 @@ module DeadlineMachines
     end
 
     def advance(seconds)
-      @now_ns += (seconds.to_f * 1_000_000_000).round
+      @now_ns += (seconds.to_r * 1_000_000_000).round
       self
     end
   end
