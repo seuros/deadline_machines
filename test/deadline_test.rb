@@ -166,6 +166,29 @@ module DeadlineMachines
       assert_empty root.instance_variable_get(:@children).keys
     end
 
+    def test_an_observer_outlives_every_link_above_it
+      root = Deadline.never(clock: @clock)
+      seen = []
+      ->(parent) { parent.derive(5).derive(5).on_cancel { seen << :deep } }.call(root)
+      3.times { GC.start }
+
+      root.cancel
+
+      assert_equal [:deep], seen
+    end
+
+    def test_a_cancelled_chain_is_let_go_of_link_by_link
+      root = Deadline.never(clock: @clock)
+      DISCARDED.times do
+        leaf = root.derive(5).derive(5)
+        leaf.on_cancel { nil }
+        leaf.cancel
+      end
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@children).keys
+    end
+
     def test_an_observer_outlives_the_child_reference_the_caller_dropped
       root = Deadline.never(clock: @clock)
       seen = []

@@ -27,7 +27,7 @@ module DeadlineMachines
       @cancelled = false
       @reason = nil
       @children = ObjectSpace::WeakMap.new
-      @observed = {}
+      @retained = {}
       @callbacks = []
       @mutex = Mutex.new
     end
@@ -96,7 +96,7 @@ module DeadlineMachines
       if already
         block.call(self)
       else
-        @parent&.observe(self)
+        @parent&.retain(self)
       end
       self
     end
@@ -121,14 +121,22 @@ module DeadlineMachines
     protected
 
     # A derived deadline is the caller's to keep, so the parent follows it
-    # weakly. Registering an observer hands the parent something to deliver,
-    # which it has to stay alive to deliver.
-    def observe(child)
-      @mutex.synchronize { @observed[child] = true }
+    # weakly. Something to deliver is the exception, and it has to be held all
+    # the way to the root: an intermediate deadline nobody else references is
+    # the one link whose collection would strand the delivery below it.
+    def retain(child)
+      @mutex.synchronize { @retained[child] = true }
+      @parent&.retain(self)
     end
 
     def release(child)
-      @mutex.synchronize { @observed.delete(child) }
+      @mutex.synchronize { @retained.delete(child) }
+      @parent&.release(self) unless pending?
+    end
+
+    # Whether anything is still owed through this deadline.
+    def pending?
+      @mutex.synchronize { !@cancelled && !(@callbacks.empty? && @retained.empty?) }
     end
 
     private
