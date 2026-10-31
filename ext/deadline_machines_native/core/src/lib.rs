@@ -181,9 +181,6 @@ mod scope {
     /// A budget and a cancellation handle as one value, which is what a retry
     /// policy or a circuit breaker actually needs to consult.
     ///
-    /// Cloning shares the cancellation state; [`Scope::derive`] and
-    /// [`Scope::child`] create a new one that its parent can cancel.
-    ///
     /// ```
     /// use deadline_machines::{Deadline, Instant, Scope, Stopped};
     ///
