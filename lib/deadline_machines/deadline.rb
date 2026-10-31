@@ -76,18 +76,22 @@ module DeadlineMachines
         [@callbacks.dup, @children.dup]
       end
 
-      children.each { |child| child.cancel(reason) }
-      callbacks.each { |callback| callback.call(self) }
+      failures = []
+      children.each { |child| notify(failures) { child.cancel(reason) } }
+      callbacks.each { |callback| notify(failures) { callback.call(self) } }
+      raise failures.first unless failures.empty?
+
       self
     end
 
     def on_cancel(&block)
-      fire = @mutex.synchronize do
-        @callbacks << block unless cancelled?
-        cancelled?
+      already = @mutex.synchronize do
+        settled = cancelled?
+        @callbacks << block unless settled
+        settled
       end
 
-      block.call(self) if fire
+      block.call(self) if already
       self
     end
 
@@ -106,6 +110,16 @@ module DeadlineMachines
     def inspect
       state = cancelled? ? 'cancelled' : (expired? ? 'expired' : format('%.3fs left', remaining))
       "#<#{self.class} #{state}>"
+    end
+
+    private
+
+    # Every observer and descendant is told, then the first failure is raised.
+    # One raising observer must not silence its peers.
+    def notify(failures)
+      yield
+    rescue StandardError => e
+      failures << e
     end
 
     protected

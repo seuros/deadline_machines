@@ -131,5 +131,27 @@ module DeadlineMachines
 
       assert_predicate escaped, :cancelled?
     end
+    def test_one_failing_observer_does_not_silence_its_peers
+      fired = []
+      deadline = Deadline.never(clock: @clock)
+      deadline.on_cancel { raise 'observer boom' }
+      deadline.on_cancel { fired << :second }
+
+      assert_raises(RuntimeError) { deadline.cancel }
+
+      assert_equal [:second], fired
+    end
+
+    def test_a_failing_child_observer_does_not_silence_a_sibling
+      seen = []
+      root = Deadline.never(clock: @clock)
+      root.derive(5).on_cancel { raise 'boom' }
+      root.derive(5).on_cancel { seen << :sibling }
+
+      assert_raises(RuntimeError) { root.cancel }
+
+      assert_equal [:sibling], seen
+    end
+
   end
 end
