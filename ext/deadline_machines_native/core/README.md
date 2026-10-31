@@ -22,9 +22,26 @@ token.cancel();
 assert!(child.is_cancelled());
 ```
 
+`Scope` pairs the two, which is what a retry policy or a circuit breaker
+actually consults:
+
+```rust
+use deadline_machines::{Deadline, Instant, Scope, Stopped};
+
+let now = Instant(0);
+let request = Scope::new(Deadline::after(now, 5_000));
+let attempt = request.derive(now, 9_000);
+
+// A child cannot outlive its parent.
+assert_eq!(attempt.deadline(), request.deadline());
+
+request.cancel();
+assert_eq!(attempt.check(now), Err(Stopped::Cancelled));
+```
+
 `Deadline` is `Copy` and holds no clock, so callers keep their own time source
-and pass `Instant` in. `CancelToken` needs the `alloc` feature; `SystemClock`
-needs `std`.
+and pass `Instant` in. `Scope` and `CancelToken` need the `alloc` feature;
+`SystemClock` needs `std`. Everything builds on bare metal.
 
 This crate is the time contract the rest of the machines family builds on:
 `chrono-machines` clamps its backoff to it, `breaker-machines` fails fast when it

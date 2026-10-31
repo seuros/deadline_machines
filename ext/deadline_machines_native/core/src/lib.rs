@@ -3,6 +3,11 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+/// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 pub const NS_PER_SECOND: u64 = 1_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -29,7 +34,9 @@ impl Deadline {
 
     #[must_use]
     pub const fn at(instant: Instant) -> Self {
-        Self { expires_at: Some(instant) }
+        Self {
+            expires_at: Some(instant),
+        }
     }
 
     #[must_use]
@@ -77,9 +84,8 @@ impl Deadline {
     #[must_use]
     pub const fn clamp_sleep_ns(&self, now: Instant, requested_ns: u64) -> u64 {
         match self.remaining_ns(now) {
-            None => requested_ns,
             Some(left) if left < requested_ns => left,
-            Some(_) => requested_ns,
+            _ => requested_ns,
         }
     }
 }
@@ -92,13 +98,16 @@ pub mod cancel {
     #[derive(Debug)]
     struct Node {
         cancelled: AtomicBool,
-        parent: Option<Arc<Node>>,
+        parent: Option<Arc<Self>>,
     }
 
     impl Node {
         fn is_cancelled(&self) -> bool {
             self.cancelled.load(Ordering::Acquire)
-                || self.parent.as_ref().is_some_and(|parent| parent.is_cancelled())
+                || self
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| parent.is_cancelled())
         }
     }
 
@@ -110,7 +119,12 @@ pub mod cancel {
     impl CancelToken {
         #[must_use]
         pub fn root() -> Self {
-            Self { node: Arc::new(Node { cancelled: AtomicBool::new(false), parent: None }) }
+            Self {
+                node: Arc::new(Node {
+                    cancelled: AtomicBool::new(false),
+                    parent: None,
+                }),
+            }
         }
 
         #[must_use]
@@ -140,6 +154,147 @@ pub mod cancel {
     }
 }
 
+/// Why a [`Scope`] stopped admitting work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    /// The budget ran out.
+    Exceeded,
+    /// Someone upstream gave up.
+    Cancelled,
+}
+
+impl core::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Exceeded => "deadline exceeded",
+            Self::Cancelled => "deadline cancelled",
+        })
+    }
+}
+
+impl core::error::Error for Stopped {}
+
+#[cfg(feature = "alloc")]
+mod scope {
+    use super::{Deadline, Instant, Stopped, cancel::CancelToken};
+
+    /// A budget and a cancellation handle as one value, which is what a retry
+    /// policy or a circuit breaker actually needs to consult.
+    ///
+    /// Cloning shares the cancellation state; [`Scope::derive`] and
+    /// [`Scope::child`] create a new one that its parent can cancel.
+    ///
+    /// ```
+    /// use deadline_machines::{Deadline, Instant, Scope, Stopped};
+    ///
+    /// let now = Instant(0);
+    /// let request = Scope::new(Deadline::after(now, 5_000));
+    ///
+    /// let attempt = request.derive(now, 9_000);
+    /// assert_eq!(attempt.deadline(), request.deadline());
+    ///
+    /// request.cancel();
+    /// assert_eq!(attempt.check(now), Err(Stopped::Cancelled));
+    /// ```
+    #[derive(Debug, Clone)]
+    pub struct Scope {
+        deadline: Deadline,
+        token: CancelToken,
+    }
+
+    impl Scope {
+        #[must_use]
+        pub fn new(deadline: Deadline) -> Self {
+            Self {
+                deadline,
+                token: CancelToken::root(),
+            }
+        }
+
+        /// A scope with no time limit, cancellable only.
+        #[must_use]
+        pub fn never() -> Self {
+            Self::new(Deadline::never())
+        }
+
+        #[must_use]
+        pub const fn deadline(&self) -> Deadline {
+            self.deadline
+        }
+
+        #[must_use]
+        pub const fn remaining_ns(&self, now: Instant) -> Option<u64> {
+            self.deadline.remaining_ns(now)
+        }
+
+        #[must_use]
+        pub fn is_cancelled(&self) -> bool {
+            self.token.is_cancelled()
+        }
+
+        #[must_use]
+        pub const fn is_expired(&self, now: Instant) -> bool {
+            self.deadline.is_expired(now)
+        }
+
+        #[must_use]
+        pub fn is_done(&self, now: Instant) -> bool {
+            self.is_cancelled() || self.is_expired(now)
+        }
+
+        /// Cancellation reaches every scope derived from this one, now or later.
+        pub fn cancel(&self) {
+            self.token.cancel();
+        }
+
+        /// The cooperative checkpoint.
+        ///
+        /// # Errors
+        ///
+        /// [`Stopped::Cancelled`] when this scope or an ancestor was cancelled,
+        /// which outranks [`Stopped::Exceeded`] for a spent budget. Matches the
+        /// precedence on the Ruby side.
+        pub fn check(&self, now: Instant) -> Result<(), Stopped> {
+            if self.is_cancelled() {
+                return Err(Stopped::Cancelled);
+            }
+            if self.is_expired(now) {
+                return Err(Stopped::Exceeded);
+            }
+            Ok(())
+        }
+
+        /// A child scope whose deadline is the tighter of this one and
+        /// `timeout_ns` from `now`.
+        #[must_use]
+        pub fn derive(&self, now: Instant, timeout_ns: u64) -> Self {
+            Self {
+                deadline: self.deadline.derive(now, timeout_ns),
+                token: self.token.child(),
+            }
+        }
+
+        /// A child scope with the same deadline, cancellable on its own.
+        #[must_use]
+        pub fn child(&self) -> Self {
+            Self {
+                deadline: self.deadline,
+                token: self.token.child(),
+            }
+        }
+
+        /// The longest sleep that still fits the budget. A retry policy calls
+        /// this before each backoff so it cannot outlive its caller.
+        #[must_use]
+        pub const fn clamp_sleep_ns(&self, now: Instant, requested_ns: u64) -> u64 {
+            self.deadline.clamp_sleep_ns(now, requested_ns)
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
+pub use scope::Scope;
+
 #[cfg(feature = "std")]
 mod system_clock {
     use super::Clock;
@@ -153,7 +308,9 @@ mod system_clock {
     impl SystemClock {
         #[must_use]
         pub fn new() -> Self {
-            Self { origin: StdInstant::now() }
+            Self {
+                origin: StdInstant::now(),
+            }
         }
     }
 

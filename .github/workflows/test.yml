@@ -1,0 +1,82 @@
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CORE: ext/deadline_machines_native/core
+
+jobs:
+  test-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Rust (mise)
+        uses: jdx/mise-action@v5
+        with:
+          install_args: rust
+      - name: Lint and test every feature combination
+        working-directory: ${{ env.CORE }}
+        run: |
+          for features in "" alloc std; do
+            echo "::group::features: ${features:-none}"
+            cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
+            cargo test --no-default-features --features "$features" --lib
+            echo "::endgroup::"
+          done
+      - name: Run doc tests
+        working-directory: ${{ env.CORE }}
+        run: cargo test --all-features --doc
+
+  test-no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Rust (mise)
+        uses: jdx/mise-action@v5
+        with:
+          install_args: rust
+      - name: Build and lint on bare metal
+        working-directory: ${{ env.CORE }}
+        run: |
+          for features in "" alloc; do
+            echo "::group::thumbv7em features: ${features:-none}"
+            cargo build --no-default-features --features "$features" --target thumbv7em-none-eabihf
+            cargo clippy --no-default-features --features "$features" --target thumbv7em-none-eabihf -- -D warnings
+            echo "::endgroup::"
+          done
+
+  test-ruby:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby-version: ['4.0', 'jruby-10.1.2.0', 'truffleruby-40.0.0']
+    env:
+      BUNDLE_PATH: vendor/bundle
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up toolchain (mise)
+        uses: jdx/mise-action@v5
+        with:
+          # First release that hands `depends` tools to ruby-build (jdx/mise#13942).
+          version: 2026.10.3
+          mise_toml: |
+            [tools]
+            ruby = { version = "${{ matrix.ruby-version }}"${{ startsWith(matrix.ruby-version, 'jruby') && ', depends = ["java"]' || '' }} }
+            ${{ startsWith(matrix.ruby-version, 'jruby') && 'java = "temurin-21"' || '' }}
+      - name: Cache gems
+        uses: actions/cache@v6
+        with:
+          path: vendor/bundle
+          key: ${{ runner.os }}-gems-${{ matrix.ruby-version }}-${{ hashFiles('Gemfile', '*.gemspec') }}
+      - name: Install gems
+        run: bundle install --jobs 4
+      - name: Run tests
+        run: bundle exec rake test
+      - name: Validate signatures
+        if: matrix.ruby-version == '4.0'
+        run: bundle exec rbs -I sig validate

@@ -1,0 +1,78 @@
+module DeadlineMachines
+  VERSION: String
+  FIBER_KEY: Symbol
+
+  # Any monotonic nanosecond time source.
+  interface _Clock
+    def now_ns: () -> Integer
+  end
+
+  class Error < StandardError
+  end
+
+  class Exceeded < Error
+    attr_reader deadline: Deadline
+    def initialize: (Deadline) -> void
+  end
+
+  class Cancelled < Error
+    attr_reader deadline: Deadline
+    attr_reader reason: untyped
+    def initialize: (Deadline, ?untyped) -> void
+  end
+
+  module MonotonicClock
+    def self.now_ns: () -> Integer
+  end
+
+  class TestClock
+    attr_accessor now_ns: Integer
+    def initialize: (?now_ns: Integer) -> void
+    def advance: (Numeric) -> self
+  end
+
+  class Deadline
+    NS_PER_SECOND: Integer
+
+    attr_reader expires_at_ns: Integer?
+    attr_reader parent: Deadline?
+    attr_reader clock: _Clock
+    attr_reader reason: untyped
+
+    def self.after: (Numeric, ?clock: _Clock) -> Deadline
+    def self.never: (?clock: _Clock) -> Deadline
+    def self.to_ns: (Numeric) -> Integer
+
+    def initialize: (expires_at_ns: Integer?, clock: _Clock, ?parent: Deadline?) -> void
+
+    # nil when there is no time limit.
+    def remaining_ns: () -> Integer?
+    def remaining: () -> Float
+    def expired?: () -> bool
+    def cancelled?: () -> bool
+    def done?: () -> bool
+    def check!: () -> self
+    def clamp_sleep: (Numeric) -> Numeric
+    def cancel: (?untyped) -> self
+    def on_cancel: () { (Deadline) -> void } -> self
+
+    # Without a block the child is returned; with one it is unlinked on exit
+    # and the block's value is returned.
+    def derive: (?Numeric?) -> Deadline
+              | [T] (?Numeric?) { (Deadline) -> T } -> T
+
+    def inspect: () -> String
+
+    private def child_expiry_ns: (Numeric?) -> Integer?
+  end
+
+  def self.clock: () -> _Clock
+  def self.clock=: (_Clock?) -> _Clock?
+  def self.current: () -> Deadline?
+  def self.with_deadline: [T] (?Numeric?) { (Deadline) -> T } -> T
+  def self.bind: [T] (Deadline) { (Deadline) -> T } -> T
+  def self.check!: () -> Deadline?
+  def self.remaining: () -> Float
+  def self.clamp_sleep: (Numeric) -> Numeric
+  def self.deadline?: (untyped) -> bool
+end

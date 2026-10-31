@@ -60,9 +60,12 @@ unlinks the child on exit, so a long-lived parent does not accumulate children.
 ## Rust
 
 The same arithmetic and cancellation tree ships as the `deadline-machines` crate
-under `ext/deadline_machines_native/core`, `no_std` with zero dependencies. The
-gem is pure Ruby: reading a monotonic clock is already a vDSO read, so there is
-nothing here worth a native extension.
+under `ext/deadline_machines_native/core`, `no_std` with zero dependencies and
+verified on bare metal. `Scope` there is the peer of `Deadline` here: a budget
+and a cancellation handle as one value.
+
+The gem itself is pure Ruby. Reading a monotonic clock is already a vDSO read,
+so there is nothing here worth a native extension.
 
 ## License
 
