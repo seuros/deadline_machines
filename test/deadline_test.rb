@@ -142,6 +142,41 @@ module DeadlineMachines
       assert_equal [:second], fired
     end
 
+    # Derived deadlines the caller dropped, with nothing left to deliver to
+    # them.
+    DISCARDED = 20_000
+
+    def test_a_derived_deadline_the_caller_dropped_is_not_kept
+      root = Deadline.never(clock: @clock)
+      DISCARDED.times { root.derive(5) }
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@children).keys
+    end
+
+    def test_a_cancelled_child_is_let_go_of
+      root = Deadline.never(clock: @clock)
+      DISCARDED.times do
+        child = root.derive(5)
+        child.on_cancel { nil }
+        child.cancel
+      end
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@children).keys
+    end
+
+    def test_an_observer_outlives_the_child_reference_the_caller_dropped
+      root = Deadline.never(clock: @clock)
+      seen = []
+      root.derive(5).on_cancel { seen << :fired }
+      3.times { GC.start }
+
+      root.cancel
+
+      assert_equal [:fired], seen
+    end
+
     def test_a_failing_child_observer_does_not_silence_a_sibling
       seen = []
       root = Deadline.never(clock: @clock)

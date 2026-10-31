@@ -26,7 +26,8 @@ module DeadlineMachines
       @parent = parent
       @cancelled = false
       @reason = nil
-      @children = []
+      @children = ObjectSpace::WeakMap.new
+      @observed = {}
       @callbacks = []
       @mutex = Mutex.new
     end
@@ -73,12 +74,13 @@ module DeadlineMachines
 
         @cancelled = true
         @reason = reason
-        [@callbacks.dup, @children.dup]
+        [@callbacks.dup, @children.keys]
       end
 
       failures = []
       children.each { |child| notify(failures) { child.cancel(reason) } }
       callbacks.each { |callback| notify(failures) { callback.call(self) } }
+      @parent&.release(self)
       raise failures.first unless failures.empty?
 
       self
@@ -91,13 +93,17 @@ module DeadlineMachines
         settled
       end
 
-      block.call(self) if already
+      if already
+        block.call(self)
+      else
+        @parent&.observe(self)
+      end
       self
     end
 
     def derive(seconds = nil)
       child = self.class.new(expires_at_ns: child_expiry_ns(seconds), clock: @clock, parent: self)
-      @mutex.synchronize { @children << child }
+      @mutex.synchronize { @children[child] = true }
       return child unless block_given?
 
       begin
@@ -110,6 +116,19 @@ module DeadlineMachines
     def inspect
       state = cancelled? ? 'cancelled' : (expired? ? 'expired' : format('%.3fs left', remaining))
       "#<#{self.class} #{state}>"
+    end
+
+    protected
+
+    # A derived deadline is the caller's to keep, so the parent follows it
+    # weakly. Registering an observer hands the parent something to deliver,
+    # which it has to stay alive to deliver.
+    def observe(child)
+      @mutex.synchronize { @observed[child] = true }
+    end
+
+    def release(child)
+      @mutex.synchronize { @observed.delete(child) }
     end
 
     private
