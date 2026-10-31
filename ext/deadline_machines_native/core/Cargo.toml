@@ -10,7 +10,6 @@ repository = "https://github.com/seuros/deadline_machines"
 keywords = ["deadline", "timeout", "cancellation", "resilience", "no-std"]
 categories = ["no-std", "concurrency"]
 readme = "README.md"
-exclude = ["src/**/tests.rs"]
 
 [lib]
 name = "deadline_machines"
