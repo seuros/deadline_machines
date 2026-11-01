@@ -149,6 +149,9 @@ module DeadlineMachines
     # Registrations raced against a cancellation of the same deadline.
     RACERS = 2_000
 
+    # Seconds a test waits for a racing thread before calling it wedged.
+    RENDEZVOUS = 5
+
     def test_a_derived_deadline_the_caller_dropped_is_not_kept
       root = Deadline.never(clock: @clock)
       DISCARDED.times { root.derive(5) }
@@ -175,7 +178,8 @@ module DeadlineMachines
         child = root.derive(5)
         registering = Thread.new { child.on_cancel { nil } }
         child.cancel
-        registering.join
+
+        assert registering.join(RENDEZVOUS), 'a registration never finished'
       end
       3.times { GC.start }
 
@@ -248,7 +252,8 @@ module DeadlineMachines
         fired = false
         killer = Thread.new { doomed.cancel }
         middle.derive(5).on_cancel { fired = true }
-        killer.join
+
+        assert killer.join(RENDEZVOUS), 'a cancellation never finished'
         root.cancel
 
         assert fired
