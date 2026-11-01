@@ -89,15 +89,14 @@ module DeadlineMachines
     def on_cancel(&block)
       already = @mutex.synchronize do
         settled = cancelled?
-        @callbacks << block unless settled
+        unless settled
+          @callbacks << block
+          @parent&.retain(self)
+        end
         settled
       end
 
-      if already
-        block.call(self)
-      else
-        @parent&.retain(self)
-      end
+      block.call(self) if already
       self
     end
 

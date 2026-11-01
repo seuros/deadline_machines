@@ -146,6 +146,9 @@ module DeadlineMachines
     # them.
     DISCARDED = 20_000
 
+    # Registrations raced against a cancellation of the same deadline.
+    RACERS = 2_000
+
     def test_a_derived_deadline_the_caller_dropped_is_not_kept
       root = Deadline.never(clock: @clock)
       DISCARDED.times { root.derive(5) }
@@ -164,6 +167,19 @@ module DeadlineMachines
       3.times { GC.start }
 
       assert_empty root.instance_variable_get(:@children).keys
+    end
+
+    def test_a_cancellation_racing_registration_leaves_nothing_retained
+      root = Deadline.never(clock: @clock)
+      RACERS.times do
+        child = root.derive(5)
+        registering = Thread.new { child.on_cancel { nil } }
+        child.cancel
+        registering.join
+      end
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@retained).keys
     end
 
     def test_an_observer_outlives_every_link_above_it
