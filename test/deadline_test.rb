@@ -149,6 +149,11 @@ module DeadlineMachines
     # Registrations raced against a cancellation of the same deadline.
     RACERS = 2_000
 
+    # A weak map still lists whatever the collector has not reached, including
+    # the local the loop just wrote, so these tests ask that nothing
+    # accumulates rather than that the collector has already run.
+    SETTLED = 16
+
     # Seconds a test waits for a racing thread before calling it wedged.
     RENDEZVOUS = 5
 
@@ -157,7 +162,7 @@ module DeadlineMachines
       DISCARDED.times { root.derive(5) }
       3.times { GC.start }
 
-      assert_empty root.instance_variable_get(:@children).keys
+      assert_settled root
     end
 
     def test_a_cancelled_child_is_let_go_of
@@ -169,7 +174,7 @@ module DeadlineMachines
       end
       3.times { GC.start }
 
-      assert_empty root.instance_variable_get(:@children).keys
+      assert_settled root
     end
 
     def test_a_cancellation_racing_registration_leaves_nothing_retained
@@ -280,7 +285,7 @@ module DeadlineMachines
       end
       3.times { GC.start }
 
-      assert_empty root.instance_variable_get(:@children).keys
+      assert_settled root
     end
 
     def test_an_observer_outlives_the_child_reference_the_caller_dropped
@@ -305,5 +310,13 @@ module DeadlineMachines
       assert_equal [:sibling], seen
     end
 
+    private
+
+    # Nothing is owed through +root+, and its weak children have not grown with
+    # the number of deadlines the test discarded.
+    def assert_settled(root)
+      assert_empty root.instance_variable_get(:@retained).keys
+      assert_operator root.instance_variable_get(:@children).keys.size, :<, SETTLED
+    end
   end
 end
