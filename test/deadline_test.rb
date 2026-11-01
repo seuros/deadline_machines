@@ -182,6 +182,30 @@ module DeadlineMachines
       assert_empty root.instance_variable_get(:@retained).keys
     end
 
+    def test_a_block_scope_that_observed_its_child_leaves_nothing_behind
+      root = Deadline.never(clock: @clock)
+      DISCARDED.times { root.derive(5) { |child| child.on_cancel { nil } } }
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@retained).keys
+    end
+
+    def test_an_observer_registered_after_a_scope_ended_is_the_callers_own
+      root = Deadline.never(clock: @clock)
+      escaped = nil
+      root.derive(5) { |child| escaped = child }
+      escaped.on_cancel { nil }
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@retained).keys
+
+      fired = false
+      escaped.on_cancel { fired = true }
+      escaped.cancel
+
+      assert fired
+    end
+
     def test_a_sibling_cancellation_does_not_strand_a_fresh_observer
       RACERS.times do
         root = Deadline.never(clock: @clock)

@@ -25,6 +25,7 @@ module DeadlineMachines
       @clock = clock
       @parent = parent
       @cancelled = false
+      @detached = false
       @reason = nil
       @children = ObjectSpace::WeakMap.new
       @retained = {}
@@ -91,7 +92,7 @@ module DeadlineMachines
         settled = cancelled?
         unless settled
           @callbacks << block
-          @parent&.hold(self)
+          @parent&.hold(self) unless @detached
         end
         settled
       end
@@ -108,7 +109,7 @@ module DeadlineMachines
       begin
         yield child
       ensure
-        @mutex.synchronize { @children.delete(child) }
+        @mutex.synchronize { detach(child) }
       end
     end
 
@@ -120,6 +121,7 @@ module DeadlineMachines
     protected
 
     attr_reader :mutex
+    attr_writer :detached
 
     # A derived deadline is the caller's to keep, so the parent follows it
     # weakly. Something to deliver is the exception, and it has to be held all
@@ -137,6 +139,15 @@ module DeadlineMachines
     def drop(child)
       @retained.delete(child)
       @parent.drop(self) if @parent && !pending?
+    end
+
+    # A scope that has ended owns its child outright: the tree will not reach
+    # it again, so the parent holds nothing for it and an observer registered
+    # afterwards is the caller's own to keep alive.
+    def detach(child)
+      @children.delete(child)
+      child.detached = true
+      drop(child)
     end
 
     # Whether anything is still owed through this deadline.
