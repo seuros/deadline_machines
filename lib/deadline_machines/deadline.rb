@@ -123,6 +123,9 @@ module DeadlineMachines
     # weakly. Something to deliver is the exception, and it has to be held all
     # the way to the root: an intermediate deadline nobody else references is
     # the one link whose collection would strand the delivery below it.
+    #
+    # LOCK ORDER: a deadline may take its parent's lock while holding its own,
+    # never the reverse, so nothing here may reach down into a child under lock.
     def retain(child)
       @mutex.synchronize { @retained[child] = true }
       @parent&.retain(self)
