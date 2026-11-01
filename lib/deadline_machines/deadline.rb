@@ -29,7 +29,7 @@ module DeadlineMachines
       @children = ObjectSpace::WeakMap.new
       @retained = {}
       @callbacks = []
-      @mutex = Mutex.new
+      @mutex = parent ? parent.mutex : Mutex.new
     end
 
     def remaining_ns
@@ -74,13 +74,13 @@ module DeadlineMachines
 
         @cancelled = true
         @reason = reason
+        @parent&.drop(self)
         [@callbacks.dup, @children.keys]
       end
 
       failures = []
       children.each { |child| notify(failures) { child.cancel(reason) } }
       callbacks.each { |callback| notify(failures) { callback.call(self) } }
-      @parent&.release(self)
       raise failures.first unless failures.empty?
 
       self
@@ -91,7 +91,7 @@ module DeadlineMachines
         settled = cancelled?
         unless settled
           @callbacks << block
-          @parent&.retain(self)
+          @parent&.hold(self)
         end
         settled
       end
@@ -119,26 +119,29 @@ module DeadlineMachines
 
     protected
 
+    attr_reader :mutex
+
     # A derived deadline is the caller's to keep, so the parent follows it
     # weakly. Something to deliver is the exception, and it has to be held all
     # the way to the root: an intermediate deadline nobody else references is
     # the one link whose collection would strand the delivery below it.
     #
-    # LOCK ORDER: a deadline may take its parent's lock while holding its own,
-    # never the reverse, so nothing here may reach down into a child under lock.
-    def retain(child)
-      @mutex.synchronize { @retained[child] = true }
-      @parent&.retain(self)
+    # Holding and dropping walk the chain, so they cannot be made atomic out of
+    # one lock per link: every deadline in a tree shares the root's lock, and
+    # both run inside a section the caller already holds.
+    def hold(child)
+      @retained[child] = true
+      @parent&.hold(self)
     end
 
-    def release(child)
-      @mutex.synchronize { @retained.delete(child) }
-      @parent&.release(self) unless pending?
+    def drop(child)
+      @retained.delete(child)
+      @parent.drop(self) if @parent && !pending?
     end
 
     # Whether anything is still owed through this deadline.
     def pending?
-      @mutex.synchronize { !@cancelled && !(@callbacks.empty? && @retained.empty?) }
+      !@cancelled && !(@callbacks.empty? && @retained.empty?)
     end
 
     private

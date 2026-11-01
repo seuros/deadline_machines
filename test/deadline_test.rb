@@ -182,6 +182,22 @@ module DeadlineMachines
       assert_empty root.instance_variable_get(:@retained).keys
     end
 
+    def test_a_sibling_cancellation_does_not_strand_a_fresh_observer
+      RACERS.times do
+        root = Deadline.never(clock: @clock)
+        middle = root.derive(5)
+        doomed = middle.derive(5)
+        doomed.on_cancel { nil }
+        fired = false
+        killer = Thread.new { doomed.cancel }
+        middle.derive(5).on_cancel { fired = true }
+        killer.join
+        root.cancel
+
+        assert fired
+      end
+    end
+
     def test_an_observer_outlives_every_link_above_it
       root = Deadline.never(clock: @clock)
       seen = []
