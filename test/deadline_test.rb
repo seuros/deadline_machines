@@ -222,6 +222,23 @@ module DeadlineMachines
       assert fired
     end
 
+    def test_a_link_that_still_owes_its_own_observer_is_kept
+      root = Deadline.never(clock: @clock)
+      middle = root.derive(5)
+      seen = []
+      middle.on_cancel { seen << :middle }
+      leaf = middle.derive(5)
+      leaf.on_cancel { nil }
+      leaf.cancel
+      3.times { GC.start }
+
+      assert_equal [middle], root.instance_variable_get(:@retained).keys
+
+      root.cancel
+
+      assert_equal [:middle], seen
+    end
+
     def test_a_sibling_cancellation_does_not_strand_a_fresh_observer
       RACERS.times do
         root = Deadline.never(clock: @clock)
