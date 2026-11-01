@@ -190,6 +190,22 @@ module DeadlineMachines
       assert_empty root.instance_variable_get(:@retained).keys
     end
 
+    def test_a_detached_subtree_does_not_reconnect_through_a_descendant
+      root = Deadline.never(clock: @clock)
+      escaped = nil
+      root.derive(5) { |child| escaped = child }
+      deep = escaped.derive(5).derive(5)
+      fired = false
+      deep.on_cancel { fired = true }
+      3.times { GC.start }
+
+      assert_empty root.instance_variable_get(:@retained).keys
+
+      escaped.cancel
+
+      assert fired
+    end
+
     def test_an_observer_registered_after_a_scope_ended_is_the_callers_own
       root = Deadline.never(clock: @clock)
       escaped = nil

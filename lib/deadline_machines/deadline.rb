@@ -133,7 +133,7 @@ module DeadlineMachines
     # both run inside a section the caller already holds.
     def hold(child)
       @retained[child] = true
-      @parent&.hold(self)
+      @parent.hold(self) if @parent && !@detached
     end
 
     def drop(child)
