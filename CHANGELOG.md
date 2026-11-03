@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.2](https://github.com/seuros/deadline_machines/compare/deadline_machines/v0.1.1...deadline_machines/v0.1.2) (2026-11-03)
+
+
+### Features
+
+* add optional Tokio deadline adapter ([6a36628](https://github.com/seuros/deadline_machines/commit/6a366288d4738f99affc172c62e6c49ca5caae37))
+* pass a rubygems OTP through the environment ([d21d1b1](https://github.com/seuros/deadline_machines/commit/d21d1b13e22172eed51081e971342bd70f99f437))
+
+
+### Bug Fixes
+
+* a republished platform gem is skipped, not fatal ([7e12525](https://github.com/seuros/deadline_machines/commit/7e12525bfebb0d708b83784b2cb8a9e60404794b))
+* collect the built gems whatever depth the download puts them at ([d5330ad](https://github.com/seuros/deadline_machines/commit/d5330ad2c7789ab810b73e1acb5ea2aa749c9a7c))
+* the release tag carries the gem name, and the gate uses the aggregate output ([a4e0f34](https://github.com/seuros/deadline_machines/commit/a4e0f34ac239c046ed6fb1edb0ab6b6027fcf48c))
+
 ## [0.1.1](https://github.com/seuros/deadline_machines/compare/deadline_machines-v0.1.0...deadline_machines/v0.1.1) (2026-11-01)
 
 

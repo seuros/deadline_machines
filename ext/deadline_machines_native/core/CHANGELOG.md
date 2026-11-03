@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/deadline_machines/compare/deadline-machines-v0.2.0...deadline-machines-v0.3.0) (2026-11-03)
+
+
+### Features
+
+* add optional Tokio deadline adapter ([6a36628](https://github.com/seuros/deadline_machines/commit/6a366288d4738f99affc172c62e6c49ca5caae37))
+
 ## [0.2.0](https://github.com/seuros/deadline_machines/compare/deadline-machines-v0.1.0...deadline-machines-v0.2.0) (2026-11-01)
 
 
