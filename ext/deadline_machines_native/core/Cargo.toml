@@ -19,6 +19,13 @@ crate-type = ["lib"]
 default = ["std"]
 std = ["alloc"]
 alloc = []
+tokio = ["std", "dep:tokio"]
+
+[dependencies]
+tokio = { version = "1", optional = true, default-features = false, features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 
 [lints]
 workspace = true

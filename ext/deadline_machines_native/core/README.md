@@ -43,6 +43,25 @@ assert_eq!(attempt.check(now), Err(Stopped::Cancelled));
 and pass `Instant` in. `Scope` and `CancelToken` need the `alloc` feature;
 `SystemClock` needs `std`. Everything builds on bare metal.
 
+Tokio applications can opt into the `tokio` feature for a clock and timeout
+adapter. It follows Tokio's clock, including paused time in tests:
+
+```rust
+# #[cfg(feature = "tokio")]
+# {
+use deadline_machines::tokio_support::{deadline_after, timeout, TokioClock};
+use std::time::Duration;
+
+# async fn example() -> Result<(), deadline_machines::tokio_support::TimeoutError> {
+let clock = TokioClock::new();
+let deadline = deadline_after(&clock, Duration::from_secs(2));
+timeout(&clock, deadline, async { do_work().await }).await?;
+# Ok(())
+# }
+# async fn do_work() {}
+# }
+```
+
 This crate is the time contract the rest of the machines family builds on:
 `chrono-machines` clamps its backoff to it, `breaker-machines` fails fast when it
 is already spent.

@@ -131,3 +131,49 @@ mod with_alloc {
         assert!(scope.derive(Instant(0), 1_000).is_cancelled());
     }
 }
+
+#[cfg(feature = "tokio")]
+mod with_tokio {
+    use super::super::{Clock, tokio_support, tokio_support::TokioClock};
+    use std::time::Duration;
+    use tokio::time::{Instant, advance};
+
+    #[tokio::test(start_paused = true)]
+    async fn tokio_clock_and_deadline_follow_paused_time() {
+        let clock = TokioClock::new();
+        let deadline = tokio_support::deadline_after(&clock, Duration::from_secs(5));
+        let at = match clock.to_tokio_instant(deadline) {
+            Ok(Some(at)) => at,
+            _ => panic!("finite deadline should convert to a Tokio instant"),
+        };
+
+        advance(Duration::from_secs(2)).await;
+
+        assert_eq!(clock.now_ns(), 2_000_000_000);
+        assert_eq!(at.duration_since(Instant::now()), Duration::from_secs(3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_uses_the_same_tokio_deadline() {
+        let clock = TokioClock::new();
+        let deadline = tokio_support::deadline_after(&clock, Duration::from_secs(1));
+
+        let result = tokio_support::timeout(&clock, deadline, async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            7
+        })
+        .await;
+
+        assert_eq!(result, Err(tokio_support::TimeoutError::Elapsed));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unbounded_deadline_does_not_start_a_timeout() {
+        let clock = TokioClock::new();
+
+        assert_eq!(
+            tokio_support::timeout(&clock, super::super::Deadline::never(), async { 7 }).await,
+            Ok(7)
+        );
+    }
+}

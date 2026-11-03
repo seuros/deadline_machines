@@ -327,5 +327,112 @@ mod system_clock {
 #[cfg(feature = "std")]
 pub use system_clock::SystemClock;
 
+/// Tokio clock and timeout adapters.
+///
+/// This feature keeps Tokio out of the core crate while allowing async
+/// applications to use the same deadline value for budget arithmetic and
+/// executor timeouts.
+#[cfg(feature = "tokio")]
+pub mod tokio_support {
+    use super::{Clock, Deadline};
+    use core::future::Future;
+    use std::time::Duration;
+    use tokio::time::Instant as TokioInstant;
+
+    /// Why a Tokio deadline could not be enforced.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TimeoutError {
+        /// The deadline exceeded Tokio's representable instant range.
+        OutOfRange,
+        /// The deadline elapsed before the future completed.
+        Elapsed,
+    }
+
+    /// A clock whose time domain follows Tokio, including paused test time.
+    #[derive(Debug, Clone, Copy)]
+    pub struct TokioClock {
+        origin: TokioInstant,
+    }
+
+    impl TokioClock {
+        /// Start a Tokio-relative monotonic time domain.
+        #[must_use]
+        pub fn new() -> Self {
+            Self {
+                origin: TokioInstant::now(),
+            }
+        }
+
+        /// Convert a deadline created from this clock into Tokio's time domain.
+        ///
+        /// `None` means the deadline is unbounded. A deadline must be converted
+        /// with the same clock that was used to create it.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TimeoutError::OutOfRange`] if Tokio cannot represent the
+        /// corresponding instant.
+        pub fn to_tokio_instant(
+            &self,
+            deadline: Deadline,
+        ) -> Result<Option<TokioInstant>, TimeoutError> {
+            deadline
+                .expires_at()
+                .map(|at| {
+                    self.origin
+                        .checked_add(Duration::from_nanos(at.0))
+                        .ok_or(TimeoutError::OutOfRange)
+                })
+                .transpose()
+        }
+    }
+
+    impl Default for TokioClock {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Clock for TokioClock {
+        fn now_ns(&self) -> u64 {
+            u64::try_from(
+                TokioInstant::now()
+                    .saturating_duration_since(self.origin)
+                    .as_nanos(),
+            )
+            .unwrap_or(u64::MAX)
+        }
+    }
+
+    /// Enforce a deadline around a future using Tokio's clock and timer.
+    ///
+    /// Use the same [`TokioClock`] to construct `deadline` and enforce it.
+    /// An unbounded deadline simply awaits the future.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeoutError::Elapsed`] when the deadline expires, or
+    /// [`TimeoutError::OutOfRange`] if Tokio cannot represent the deadline.
+    pub async fn timeout<F: Future>(
+        clock: &TokioClock,
+        deadline: Deadline,
+        future: F,
+    ) -> Result<F::Output, TimeoutError> {
+        match clock.to_tokio_instant(deadline)? {
+            Some(at) => tokio::time::timeout_at(at, future)
+                .await
+                .map_err(|_| TimeoutError::Elapsed),
+            None => Ok(future.await),
+        }
+    }
+
+    /// Create a deadline relative to this clock.
+    #[must_use]
+    pub fn deadline_after(clock: &TokioClock, timeout: Duration) -> Deadline {
+        let timeout_ns = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
+        Deadline::after(clock.now(), timeout_ns)
+    }
+}
+
 #[cfg(test)]
 mod tests;
