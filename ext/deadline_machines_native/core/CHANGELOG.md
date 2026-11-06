@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/deadline_machines/compare/deadline-machines-v0.3.0...deadline-machines-v0.4.0) (2026-11-06)
+
+
+### Features
+
+* await cancellation and bridge to tokio-util tokens ([72118dc](https://github.com/seuros/deadline_machines/commit/72118dc316a4281f9fbcbb82c536e72b35cac0c2))
+
+
+### Bug Fixes
+
+* keep test modules out of the packaged crate ([2719800](https://github.com/seuros/deadline_machines/commit/27198003e6883be4eab975c15cd0a3e14614d808))
+
 ## [0.3.0](https://github.com/seuros/deadline_machines/compare/deadline-machines-v0.2.0...deadline-machines-v0.3.0) (2026-11-03)
 
 
