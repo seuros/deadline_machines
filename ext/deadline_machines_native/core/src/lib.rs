@@ -72,6 +72,16 @@ impl Deadline {
         }
     }
 
+    /// Push the expiry back by `ns`, for a budget that paused and should not
+    /// pay for the time it spent waiting. Never stays never.
+    #[must_use]
+    pub const fn extend(&self, ns: u64) -> Self {
+        match self.expires_at {
+            Some(expiry) => Self::at(Instant(expiry.0.saturating_add(ns))),
+            None => Self::never(),
+        }
+    }
+
     #[must_use]
     pub const fn tighten(&self, other: Self) -> Self {
         match (self.expires_at, other.expires_at) {
@@ -99,15 +109,38 @@ pub mod cancel {
     struct Node {
         cancelled: AtomicBool,
         parent: Option<Arc<Self>>,
+        #[cfg(feature = "tokio")]
+        notify: tokio::sync::Notify,
+        #[cfg(feature = "tokio-util")]
+        mirror: tokio_util::sync::CancellationToken,
     }
 
     impl Node {
+        fn new(
+            parent: Option<Arc<Self>>,
+            #[cfg(feature = "tokio-util")] mirror: tokio_util::sync::CancellationToken,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                cancelled: AtomicBool::new(false),
+                parent,
+                #[cfg(feature = "tokio")]
+                notify: tokio::sync::Notify::new(),
+                #[cfg(feature = "tokio-util")]
+                mirror,
+            })
+        }
+
         fn is_cancelled(&self) -> bool {
-            self.cancelled.load(Ordering::Acquire)
-                || self
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.is_cancelled())
+            if self.cancelled.load(Ordering::Acquire) {
+                return true;
+            }
+            #[cfg(feature = "tokio-util")]
+            if self.mirror.is_cancelled() {
+                return true;
+            }
+            self.parent
+                .as_ref()
+                .is_some_and(|parent| parent.is_cancelled())
         }
     }
 
@@ -120,30 +153,92 @@ pub mod cancel {
         #[must_use]
         pub fn root() -> Self {
             Self {
-                node: Arc::new(Node {
-                    cancelled: AtomicBool::new(false),
-                    parent: None,
-                }),
+                node: Node::new(
+                    None,
+                    #[cfg(feature = "tokio-util")]
+                    tokio_util::sync::CancellationToken::new(),
+                ),
             }
         }
 
         #[must_use]
         pub fn child(&self) -> Self {
             Self {
-                node: Arc::new(Node {
-                    cancelled: AtomicBool::new(false),
-                    parent: Some(Arc::clone(&self.node)),
-                }),
+                node: Node::new(
+                    Some(Arc::clone(&self.node)),
+                    #[cfg(feature = "tokio-util")]
+                    self.node.mirror.child_token(),
+                ),
             }
         }
 
         pub fn cancel(&self) {
             self.node.cancelled.store(true, Ordering::Release);
+            #[cfg(feature = "tokio")]
+            self.node.notify.notify_waiters();
+            #[cfg(feature = "tokio-util")]
+            self.node.mirror.cancel();
         }
 
         #[must_use]
         pub fn is_cancelled(&self) -> bool {
             self.node.is_cancelled()
+        }
+
+        /// Resolves once this token or any ancestor is cancelled. Cancel-safe:
+        /// dropping the future and awaiting again loses nothing.
+        #[cfg(feature = "tokio")]
+        pub async fn cancelled(&self) {
+            use core::future::{Future, poll_fn};
+            use core::task::Poll;
+
+            let mut waits = alloc::vec::Vec::new();
+            let mut node = Some(&*self.node);
+            while let Some(current) = node {
+                waits.push(alloc::boxed::Box::pin(current.notify.notified()));
+                node = current.parent.as_deref();
+            }
+            for wait in &mut waits {
+                wait.as_mut().enable();
+            }
+            #[cfg(feature = "tokio-util")]
+            let mut mirror = alloc::boxed::Box::pin(self.node.mirror.clone().cancelled_owned());
+            if self.is_cancelled() {
+                return;
+            }
+            poll_fn(|cx| {
+                #[cfg(feature = "tokio-util")]
+                if mirror.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(());
+                }
+                if waits
+                    .iter_mut()
+                    .any(|wait| wait.as_mut().poll(cx).is_ready())
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+
+        /// A root token that is cancelled whenever `token` is, so a scope can
+        /// sit under an existing `tokio_util` cancellation tree.
+        #[cfg(feature = "tokio-util")]
+        #[must_use]
+        pub fn linked_to(token: &tokio_util::sync::CancellationToken) -> Self {
+            Self {
+                node: Node::new(None, token.child_token()),
+            }
+        }
+
+        /// A `tokio_util` token that is cancelled whenever this one (or an
+        /// ancestor) is. Cancelling it cancels this token too.
+        #[cfg(feature = "tokio-util")]
+        #[must_use]
+        pub fn to_cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+            self.node.mirror.clone()
         }
     }
 
@@ -215,8 +310,18 @@ mod scope {
         }
 
         #[must_use]
+        pub const fn with_token(deadline: Deadline, token: CancelToken) -> Self {
+            Self { deadline, token }
+        }
+
+        #[must_use]
         pub const fn deadline(&self) -> Deadline {
             self.deadline
+        }
+
+        #[must_use]
+        pub const fn token(&self) -> &CancelToken {
+            &self.token
         }
 
         #[must_use]
@@ -280,6 +385,26 @@ mod scope {
             }
         }
 
+        /// The same scope with the tighter of its deadline and `other`.
+        /// Shares cancellation with this one.
+        #[must_use]
+        pub fn tighten(&self, other: Deadline) -> Self {
+            Self {
+                deadline: self.deadline.tighten(other),
+                token: self.token.clone(),
+            }
+        }
+
+        /// The same scope with its expiry pushed back by `ns`. Shares
+        /// cancellation with this one.
+        #[must_use]
+        pub fn extend(&self, ns: u64) -> Self {
+            Self {
+                deadline: self.deadline.extend(ns),
+                token: self.token.clone(),
+            }
+        }
+
         /// The longest sleep that still fits the budget. A retry policy calls
         /// this before each backoff so it cannot outlive its caller.
         #[must_use]
@@ -334,10 +459,91 @@ pub use system_clock::SystemClock;
 /// executor timeouts.
 #[cfg(feature = "tokio")]
 pub mod tokio_support {
-    use super::{Clock, Deadline};
-    use core::future::Future;
+    use super::{Clock, Deadline, Scope, Stopped};
+    use core::future::{Future, poll_fn};
+    use core::pin::pin;
+    use core::task::Poll;
     use std::time::Duration;
     use tokio::time::Instant as TokioInstant;
+
+    /// Why a [`Scope`] stopped a future short.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ScopeError {
+        /// The budget ran out before the future completed.
+        Exceeded,
+        /// The scope or an ancestor was cancelled.
+        Cancelled,
+        /// The deadline exceeded Tokio's representable instant range.
+        OutOfRange,
+    }
+
+    impl From<Stopped> for ScopeError {
+        fn from(stopped: Stopped) -> Self {
+            match stopped {
+                Stopped::Exceeded => Self::Exceeded,
+                Stopped::Cancelled => Self::Cancelled,
+            }
+        }
+    }
+
+    impl From<TimeoutError> for ScopeError {
+        fn from(error: TimeoutError) -> Self {
+            match error {
+                TimeoutError::Elapsed => Self::Exceeded,
+                TimeoutError::OutOfRange => Self::OutOfRange,
+            }
+        }
+    }
+
+    impl core::fmt::Display for ScopeError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str(match self {
+                Self::Exceeded => "deadline exceeded",
+                Self::Cancelled => "deadline cancelled",
+                Self::OutOfRange => "deadline out of range",
+            })
+        }
+    }
+
+    impl core::error::Error for ScopeError {}
+
+    impl Scope {
+        /// Resolves once this scope or any ancestor is cancelled. Cancel-safe.
+        pub async fn cancelled(&self) {
+            self.token().cancelled().await;
+        }
+
+        /// Run `future` under this scope's remaining budget and cancellation,
+        /// in the time domain of `clock`.
+        ///
+        /// # Errors
+        ///
+        /// [`ScopeError::Cancelled`] when the scope is cancelled, which
+        /// outranks [`ScopeError::Exceeded`] for a spent budget;
+        /// [`ScopeError::OutOfRange`] if Tokio cannot represent the deadline.
+        pub async fn tokio_timeout<F: Future>(
+            &self,
+            clock: &TokioClock,
+            future: F,
+        ) -> Result<F::Output, ScopeError> {
+            let at = clock.to_tokio_instant(self.deadline())?;
+            self.check(clock.now())?;
+            let mut future = pin!(future);
+            let mut cancelled = pin!(self.cancelled());
+            let guarded = poll_fn(|cx| {
+                if cancelled.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Err(ScopeError::Cancelled));
+                }
+                future.as_mut().poll(cx).map(Ok)
+            });
+            match at {
+                Some(at) => tokio::time::timeout_at(at, guarded)
+                    .await
+                    .map_err(|_| ScopeError::Exceeded)?,
+                None => guarded.await,
+            }
+        }
+    }
 
     /// Why a Tokio deadline could not be enforced.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

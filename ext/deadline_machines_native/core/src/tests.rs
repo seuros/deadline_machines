@@ -46,6 +46,18 @@ fn after_saturates_at_the_end_of_time() {
 }
 
 #[test]
+fn extend_pushes_the_expiry_back_and_keeps_never() {
+    let deadline = Deadline::after(Instant(0), 100);
+
+    assert_eq!(deadline.extend(50).expires_at(), Some(Instant(150)));
+    assert_eq!(
+        Deadline::at(Instant(u64::MAX)).extend(1).expires_at(),
+        Some(Instant(u64::MAX))
+    );
+    assert_eq!(Deadline::never().extend(50), Deadline::never());
+}
+
+#[test]
 fn clamp_sleep_never_overruns_the_budget() {
     let deadline = Deadline::after(Instant(0), 100);
 
@@ -123,6 +135,36 @@ mod with_alloc {
     }
 
     #[test]
+    fn tighten_and_extend_keep_the_same_cancellation() {
+        let now = Instant(0);
+        let scope = Scope::new(Deadline::after(now, 5_000));
+
+        let tightened = scope.tighten(Deadline::after(now, 1_000));
+        assert_eq!(tightened.deadline().expires_at(), Some(Instant(1_000)));
+        assert_eq!(
+            scope.tighten(Deadline::never()).deadline(),
+            scope.deadline()
+        );
+
+        let extended = scope.extend(2_000);
+        assert_eq!(extended.deadline().expires_at(), Some(Instant(7_000)));
+
+        tightened.cancel();
+        assert!(scope.is_cancelled());
+        assert!(extended.is_cancelled());
+    }
+
+    #[test]
+    fn with_token_shares_an_existing_token() {
+        let token = CancelToken::root();
+        let scope = Scope::with_token(Deadline::never(), token.child());
+
+        token.cancel();
+        assert!(scope.is_cancelled());
+        assert!(scope.token().is_cancelled());
+    }
+
+    #[test]
     fn a_scope_derived_after_cancellation_is_already_cancelled() {
         let scope = Scope::never();
         scope.cancel();
@@ -134,17 +176,155 @@ mod with_alloc {
 
 #[cfg(feature = "tokio")]
 mod with_tokio {
-    use super::super::{Clock, tokio_support, tokio_support::TokioClock};
+    use super::super::cancel::CancelToken;
+    use super::super::tokio_support::ScopeError;
+    use super::super::{Clock, Deadline, Scope, tokio_support, tokio_support::TokioClock};
     use std::time::Duration;
     use tokio::time::{Instant, advance};
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_resolves_when_an_ancestor_is_cancelled() {
+        let root = CancelToken::root();
+        let child = root.child().child();
+        let waiter = tokio::spawn(async move { child.cancelled().await });
+
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        root.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_resolves_immediately_for_a_cancelled_token() {
+        let token = CancelToken::root();
+        token.cancel();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), token.cancelled())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_survives_being_dropped_and_awaited_again() {
+        let token = CancelToken::root();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), token.cancelled())
+                .await
+                .is_err()
+        );
+
+        let second = {
+            let token = token.clone();
+            tokio::spawn(async move { token.cancelled().await })
+        };
+        tokio::task::yield_now().await;
+        token.cancel();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), second)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scope_timeout_completes_within_budget() {
+        let clock = TokioClock::new();
+        let scope = Scope::new(tokio_support::deadline_after(
+            &clock,
+            Duration::from_secs(5),
+        ));
+
+        let result = scope
+            .tokio_timeout(&clock, async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                7
+            })
+            .await;
+
+        assert_eq!(result, Ok(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scope_timeout_reports_an_exceeded_budget() {
+        let clock = TokioClock::new();
+        let scope = Scope::new(tokio_support::deadline_after(
+            &clock,
+            Duration::from_secs(1),
+        ));
+
+        let result = scope
+            .tokio_timeout(&clock, async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                7
+            })
+            .await;
+
+        assert_eq!(result, Err(ScopeError::Exceeded));
+        assert_eq!(clock.now_ns(), 1_000_000_000);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scope_timeout_reports_cancellation_from_an_ancestor() {
+        let clock = TokioClock::new();
+        let parent = Scope::new(tokio_support::deadline_after(
+            &clock,
+            Duration::from_secs(5),
+        ));
+        let scope = parent.child();
+
+        let canceller = {
+            let parent = parent.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                parent.cancel();
+            })
+        };
+        let result = scope
+            .tokio_timeout(&clock, async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                7
+            })
+            .await;
+
+        assert_eq!(result, Err(ScopeError::Cancelled));
+        assert!(canceller.await.is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scope_timeout_ranks_cancellation_ahead_of_expiry() {
+        let clock = TokioClock::new();
+        let scope = Scope::new(Deadline::at(clock.now()));
+        scope.cancel();
+
+        assert_eq!(
+            scope.tokio_timeout(&clock, async { 7 }).await,
+            Err(ScopeError::Cancelled)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scope_timeout_without_a_deadline_only_watches_cancellation() {
+        let clock = TokioClock::new();
+        let scope = Scope::never();
+
+        assert_eq!(scope.tokio_timeout(&clock, async { 7 }).await, Ok(7));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn tokio_clock_and_deadline_follow_paused_time() {
         let clock = TokioClock::new();
         let deadline = tokio_support::deadline_after(&clock, Duration::from_secs(5));
-        let at = match clock.to_tokio_instant(deadline) {
-            Ok(Some(at)) => at,
-            _ => panic!("finite deadline should convert to a Tokio instant"),
+        let Ok(Some(at)) = clock.to_tokio_instant(deadline) else {
+            panic!("finite deadline should convert to a Tokio instant")
         };
 
         advance(Duration::from_secs(2)).await;
@@ -175,5 +355,75 @@ mod with_tokio {
             tokio_support::timeout(&clock, super::super::Deadline::never(), async { 7 }).await,
             Ok(7)
         );
+    }
+}
+
+#[cfg(feature = "tokio-util")]
+mod with_tokio_util {
+    use super::super::cancel::CancelToken;
+    use super::super::{Deadline, Scope};
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_linked_token_follows_the_tokio_util_tree() {
+        let upstream = CancellationToken::new();
+        let token = CancelToken::linked_to(&upstream.child_token());
+        let scope = Scope::with_token(Deadline::never(), token.child());
+
+        assert!(!scope.is_cancelled());
+        let waiter = {
+            let scope = scope.clone();
+            tokio::spawn(async move { scope.cancelled().await })
+        };
+        tokio::task::yield_now().await;
+
+        upstream.cancel();
+
+        assert!(scope.is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_linked_token_does_not_reach_upstream() {
+        let upstream = CancellationToken::new();
+        let token = CancelToken::linked_to(&upstream);
+
+        token.cancel();
+
+        assert!(token.is_cancelled());
+        assert!(!upstream.is_cancelled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_exported_token_follows_this_tree() {
+        let root = CancelToken::root();
+        let child = root.child();
+        let exported = child.to_cancellation_token();
+
+        assert!(!exported.is_cancelled());
+        root.cancel();
+
+        assert!(exported.is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), exported.cancelled())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_an_exported_token_cancels_the_source() {
+        let token = CancelToken::root();
+        let child = token.child();
+
+        child.to_cancellation_token().cancel();
+
+        assert!(child.is_cancelled());
+        assert!(!token.is_cancelled());
     }
 }

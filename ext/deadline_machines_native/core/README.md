@@ -37,6 +37,10 @@ assert_eq!(attempt.deadline(), request.deadline());
 
 request.cancel();
 assert_eq!(attempt.check(now), Err(Stopped::Cancelled));
+
+// A budget that paused should not pay for the wait.
+let resumed = attempt.extend(2_000);
+assert_eq!(resumed.deadline().expires_at(), Some(Instant(7_000)));
 ```
 
 `Deadline` is `Copy` and holds no clock, so callers keep their own time source
@@ -61,6 +65,33 @@ timeout(&clock, deadline, async { do_work().await }).await?;
 # async fn do_work() {}
 # }
 ```
+
+A `Scope` runs a future under its remaining budget and its cancellation at
+once, and `cancelled()` is a cancel-safe future for `select!`:
+
+```rust
+# #[cfg(feature = "tokio")]
+# {
+use deadline_machines::tokio_support::{deadline_after, ScopeError, TokioClock};
+use deadline_machines::Scope;
+use std::time::Duration;
+
+# async fn example() -> Result<(), ScopeError> {
+let clock = TokioClock::new();
+let request = Scope::new(deadline_after(&clock, Duration::from_secs(2)));
+let attempt = request.child();
+
+let output = attempt.tokio_timeout(&clock, async { do_work().await }).await?;
+# let _ = output;
+# Ok(())
+# }
+# async fn do_work() {}
+# }
+```
+
+The `tokio-util` feature bridges both ways with `tokio_util::CancellationToken`:
+`CancelToken::linked_to(&token)` is cancelled whenever `token` is, and
+`to_cancellation_token()` hands out one that follows this tree.
 
 This crate is the time contract the rest of the machines family builds on:
 `chrono-machines` clamps its backoff to it, `breaker-machines` fails fast when it
