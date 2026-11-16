@@ -55,7 +55,8 @@ impl Deadline {
         }
     }
 
-    /// A budget that runs out `timeout` after `now`.
+    /// A budget that runs out `timeout` after `now`. An overflowing sum
+    /// saturates at `Duration::MAX`: it is neither refused nor `never`.
     #[must_use]
     pub const fn after(now: Duration, timeout: Duration) -> Self {
         Self::at(now.saturating_add(timeout))
@@ -98,14 +99,17 @@ impl Deadline {
         }
     }
 
-    /// A child budget: the tighter of this one and `timeout` from `now`.
+    /// A child budget: the tighter of this one and `timeout` from `now`. The
+    /// sum saturates like [`after`](Self::after), then the parent's tighter
+    /// bound applies.
     #[must_use]
     pub const fn derive(&self, now: Duration, timeout: Duration) -> Self {
         self.tighten(Self::after(now, timeout))
     }
 
     /// The expiry pushed back by `by`, for a budget that paused and should
-    /// not pay for the time it spent waiting. Never stays never.
+    /// not pay for the time it spent waiting. Never stays never; a finite
+    /// expiry saturates at `Duration::MAX` rather than overflowing.
     #[must_use]
     pub const fn extend(&self, by: Duration) -> Self {
         match self.expires_at {

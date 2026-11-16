@@ -52,6 +52,10 @@ let resumed = attempt.extend(Duration::from_secs(2));
 assert_eq!(resumed.deadline().expires_at(), Some(Duration::from_secs(7)));
 ```
 
+`after`, `derive` and finite `extend` saturate an overflowing sum at
+`Duration::MAX`; they never refuse or produce `never`, and extending `never`
+leaves it `never`. `derive` then applies the parent's tighter bound.
+
 `Deadline` builds on bare metal with no features; `CancelToken` and `Scope`
 need `alloc`.
 

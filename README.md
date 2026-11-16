@@ -97,6 +97,10 @@ deadline.tighten(DeadlineMachines::Deadline.never) # => the same deadline
 deadline.extend_by(50)          # the core's `extend`, renamed past Object#extend
 ```
 
+`after`, `derive` and `extend_by` saturate an overflowing sum at the largest
+instant the core holds (`Duration::MAX`); they never raise for it or produce
+`never`, and `extend_by` on `never` stays `never`.
+
 A `Deadline` is valid or does not exist: `expires_at` is `nil` or an Integer
 in the core's `Duration` range, checked natively whether the gem built it or
 you did. TypeError for the wrong type, RangeError out of range.
