@@ -7,6 +7,9 @@ require 'minitest/autorun'
 
 module DeadlineMachines
   class Test < Minitest::Test
+    # One second, in the nanoseconds every time in this gem is.
+    SECOND = 1_000_000_000
+
     def setup
       @clock = TestClock.new
       DeadlineMachines.clock = @clock
@@ -14,6 +17,12 @@ module DeadlineMachines
 
     def teardown
       DeadlineMachines.clock = nil
+    end
+
+    private
+
+    def seconds(count)
+      count * SECOND
     end
   end
 end

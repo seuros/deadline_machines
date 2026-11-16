@@ -2,23 +2,57 @@ module DeadlineMachines
   VERSION: String
   FIBER_KEY: Symbol
 
-  # Any monotonic nanosecond time source.
+  # :exceeded, :cancelled: the core's Refusal, in declaration order.
+  REFUSALS: Array[refusal]
+
+  type refusal = :exceeded | :cancelled
+  type cancellation = :propagated | :already_cancelled
+
+  # Any monotonic clock in Integer nanoseconds.
   interface _Clock
     def now_ns: () -> Integer
+  end
+
+  # When a budget runs out, Integer nanoseconds or nil for never. Native and
+  # validated through the core.
+  class Deadline < Data
+    attr_reader expires_at: Integer?
+
+    def self.new: (Integer? expires_at) -> Deadline
+                | (expires_at: Integer?) -> Deadline
+    def self.[]: (Integer? expires_at) -> Deadline
+               | (expires_at: Integer?) -> Deadline
+    def self.members: () -> [:expires_at]
+
+    def self.never: () -> Deadline
+    def self.at: (Integer instant) -> Deadline
+    def self.after: (Integer now, Integer timeout) -> Deadline
+
+    def initialize: (expires_at: Integer?) -> void
+
+    # nil when there is no limit.
+    def remaining: (Integer now) -> Integer?
+    def expired?: (Integer now) -> bool
+    # nil while live, :exceeded at or past expires_at.
+    def check: (Integer now) -> (:exceeded | nil)
+    def derive: (Integer now, Integer timeout) -> Deadline
+    def extend_by: (Integer by) -> Deadline
+    def tighten: (Deadline other) -> Deadline
+    def clamp_sleep: (Integer now, Integer requested) -> Integer
   end
 
   class Error < StandardError
   end
 
   class Exceeded < Error
-    attr_reader deadline: Deadline
-    def initialize: (Deadline) -> void
+    attr_reader scope: Scope
+    def initialize: (Scope scope) -> void
   end
 
   class Cancelled < Error
-    attr_reader deadline: Deadline
+    attr_reader scope: Scope
     attr_reader reason: untyped
-    def initialize: (Deadline, ?untyped) -> void
+    def initialize: (Scope scope, ?untyped reason) -> void
   end
 
   module MonotonicClock
@@ -26,53 +60,100 @@ module DeadlineMachines
   end
 
   class TestClock
-    attr_accessor now_ns: Integer
-    def initialize: (?now_ns: Integer) -> void
-    def advance: (Numeric) -> self
+    attr_reader now_ns: Integer
+    def initialize: (?Integer now_ns) -> void
+    def now_ns=: (Integer now_ns) -> Integer
+    def advance: (Integer nanos) -> self
+
+    private
+
+    def nanoseconds: (Integer value) -> Integer
   end
 
-  class Deadline
-    NS_PER_SECOND: Integer
+  # The runtime cancellation tree.
+  class CancelToken
+    def self.root: () -> CancelToken
 
-    attr_reader expires_at_ns: Integer?
-    attr_reader parent: Deadline?
-    attr_reader clock: _Clock
-    attr_reader reason: untyped
-
-    def self.after: (Numeric, ?clock: _Clock) -> Deadline
-    def self.never: (?clock: _Clock) -> Deadline
-    def self.to_ns: (Numeric) -> Integer
-
-    def initialize: (expires_at_ns: Integer?, clock: _Clock, ?parent: Deadline?) -> void
-
-    # nil when there is no time limit.
-    def remaining_ns: () -> Integer?
-    def remaining: () -> Float
-    def expired?: () -> bool
+    def initialize: (CancelToken? parent) -> void
     def cancelled?: () -> bool
-    def done?: () -> bool
-    def check!: () -> self
-    def clamp_sleep: (Numeric) -> Numeric
-    def cancel: (?untyped) -> self
-    def on_cancel: () { (Deadline) -> void } -> self
+    def reason: () -> untyped
+    def cancel: (?untyped reason) -> cancellation
+    def on_cancel: () { (CancelToken) -> void } -> self
 
     # Without a block the child is returned; with one it is unlinked on exit
     # and the block's value is returned.
-    def derive: (?Numeric?) -> Deadline
-              | [T] (?Numeric?) { (Deadline) -> T } -> T
+    def child: () -> CancelToken
+             | [T] () { (CancelToken) -> T } -> T
 
     def inspect: () -> String
 
-    private def child_expiry_ns: (Numeric?) -> Integer?
+    private def self.new: (CancelToken? parent) -> CancelToken
+
+    attr_reader mutex: Thread::Mutex
+    attr_writer detached: bool
+
+    def propagate: (untyped reason, bool inherited) -> bool
+    def hold: (CancelToken token) -> void
+    def drop: (CancelToken token) -> void
+    def detach: (CancelToken token) -> void
+    def pending?: () -> bool
+
+    private
+
+    def notify: (Array[StandardError] failures) { () -> void } -> void
+  end
+
+  # A Deadline read against a clock, and a CancelToken.
+  class Scope
+    attr_reader deadline: Deadline
+    attr_reader token: CancelToken
+    attr_reader clock: _Clock
+
+    def self.new: (Deadline deadline, ?clock: _Clock) -> Scope
+    def self.never: (?clock: _Clock) -> Scope
+    def self.with_token: (Deadline deadline, CancelToken token, ?clock: _Clock) -> Scope
+
+    def initialize: (Deadline deadline, CancelToken token, _Clock clock) -> void
+
+    # nil when there is no limit.
+    def remaining: () -> Integer?
+    def expired?: () -> bool
+    def cancelled?: () -> bool
+    def done?: () -> bool
+    def reason: () -> untyped
+    def check: () -> refusal?
+    def check!: () -> self
+    def clamp_sleep: (Integer requested) -> Integer
+    def cancel: (?untyped reason) -> cancellation
+    def on_cancel: () { (Scope) -> void } -> self
+
+    # Without a block the child is returned; with one it is unlinked on exit
+    # and the block's value is returned.
+    def derive: (Integer timeout) -> Scope
+              | [T] (Integer timeout) { (Scope) -> T } -> T
+    def child: () -> Scope
+             | [T] () { (Scope) -> T } -> T
+    def tighten: (Deadline other) -> Scope
+    def extend_by: (Integer by) -> Scope
+    def inspect: () -> String
+
+    private
+
+    def now: () -> Integer
+    def below: (Deadline deadline) -> Scope
+             | [T] (Deadline deadline) { (Scope) -> T } -> T
+    def state: () -> String
   end
 
   def self.clock: () -> _Clock
-  def self.clock=: (_Clock?) -> _Clock?
-  def self.current: () -> Deadline?
-  def self.with_deadline: [T] (?Numeric?) { (Deadline) -> T } -> T
-  def self.bind: [T] (Deadline) { (Deadline) -> T } -> T
-  def self.check!: () -> Deadline?
-  def self.remaining: () -> Float
-  def self.clamp_sleep: (Numeric) -> Numeric
-  def self.deadline?: (untyped) -> bool
+  def self.clock=: (_Clock? clock) -> _Clock?
+  def self.current: () -> Scope?
+  def self.with_deadline: [T] (?Integer? timeout) { (Scope) -> T } -> T
+  def self.bind: [T] (Scope scope) { (Scope) -> T } -> T
+  def self.check!: () -> Scope?
+  def self.remaining: () -> Integer?
+  def self.clamp_sleep: (Integer requested) -> Integer
+
+  private def self.__deadline: (untyped expires_at) -> nil
+  private def self.__deadline_of: (untyped deadline) -> Deadline
 end

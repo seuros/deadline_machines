@@ -1,93 +1,100 @@
 # deadline-machines
 
-Monotonic deadline arithmetic and cooperative cancellation trees. `no_std`, zero
-dependencies.
+Monotonic deadline arithmetic and cooperative cancellation trees. `no_std`;
+`Deadline` is allocation-free and has zero dependencies.
+
+Every instant is a `core::time::Duration` since an epoch the caller picks, and
+every span is a `Duration`. `Deadline` holds no clock: the caller reads its
+own and passes `now` in.
 
 ```rust
-use deadline_machines::{cancel::CancelToken, Deadline, Instant};
+use core::time::Duration;
+use deadline_machines::{Deadline, Refusal};
 
-let now = Instant(0);
-let request = Deadline::after(now, 5 * 1_000_000_000);
+let now = Duration::ZERO;
+let request = Deadline::after(now, Duration::from_secs(5));
 
 // A child never outlives its parent.
-let attempt = request.derive(now, 9 * 1_000_000_000);
-assert_eq!(attempt.expires_at(), request.expires_at());
+let attempt = request.derive(now, Duration::from_secs(9));
+assert_eq!(attempt, request);
 
 // A backoff that cannot overrun the budget.
-assert_eq!(request.clamp_sleep_ns(Instant(4_000_000_000), 3_000_000_000), 1_000_000_000);
+let later = Duration::from_secs(4);
+assert_eq!(request.clamp_sleep(later, Duration::from_secs(3)), Duration::from_secs(1));
 
-let token = CancelToken::root();
-let child = token.child();
-token.cancel();
-assert!(child.is_cancelled());
+// The checkpoint. A refusal records nothing: it answers for that instant.
+assert_eq!(request.check(Duration::from_secs(5)), Err(Refusal::Exceeded));
+assert_eq!(request.check(later), Ok(()));
 ```
 
-`Scope` pairs the two, which is what a retry policy or a circuit breaker
-actually consults:
+With the `alloc` feature, `CancelToken` is a cancellation tree that flows down
+and never up, and `Scope` pairs a deadline with a token, which is what a retry
+policy or a circuit breaker actually consults:
 
 ```rust
-use deadline_machines::{Deadline, Instant, Scope, Stopped};
+use core::time::Duration;
+use deadline_machines::cancel::Cancellation;
+use deadline_machines::{Deadline, Refusal, Scope};
 
-let now = Instant(0);
-let request = Scope::new(Deadline::after(now, 5_000));
-let attempt = request.derive(now, 9_000);
+let now = Duration::ZERO;
+let request = Scope::new(Deadline::after(now, Duration::from_secs(5)));
+let attempt = request.derive(now, Duration::from_secs(9));
 
 // A child cannot outlive its parent.
 assert_eq!(attempt.deadline(), request.deadline());
 
-request.cancel();
-assert_eq!(attempt.check(now), Err(Stopped::Cancelled));
+assert_eq!(request.cancel(), Cancellation::Propagated);
+assert_eq!(request.cancel(), Cancellation::AlreadyCancelled);
+assert_eq!(attempt.check(now), Err(Refusal::Cancelled));
 
 // A budget that paused should not pay for the wait.
-let resumed = attempt.extend(2_000);
-assert_eq!(resumed.deadline().expires_at(), Some(Instant(7_000)));
+let resumed = attempt.extend(Duration::from_secs(2));
+assert_eq!(resumed.deadline().expires_at(), Some(Duration::from_secs(7)));
 ```
 
-`Deadline` is `Copy` and holds no clock, so callers keep their own time source
-and pass `Instant` in. `Scope` and `CancelToken` need the `alloc` feature;
-`SystemClock` needs `std`. Everything builds on bare metal.
+`Deadline` builds on bare metal with no features; `CancelToken` and `Scope`
+need `alloc`.
 
-Tokio applications can opt into the `tokio` feature for a clock and timeout
-adapter. It follows Tokio's clock, including paused time in tests:
+The `tokio` feature adds `TokioClock`, the one clock this crate reads. It
+follows Tokio's time, paused test time included, so one deadline drives both
+the arithmetic and the executor's timer:
 
 ```rust
-# #[cfg(feature = "tokio")]
-# {
-use deadline_machines::tokio_support::{deadline_after, timeout, TokioClock};
-use std::time::Duration;
+use core::time::Duration;
+use deadline_machines::tokio_support::{TokioClock, timeout};
+use deadline_machines::{Deadline, Refusal};
 
-# async fn example() -> Result<(), deadline_machines::tokio_support::TimeoutError> {
+# async fn example() -> Result<(), Refusal> {
 let clock = TokioClock::new();
-let deadline = deadline_after(&clock, Duration::from_secs(2));
+let deadline = Deadline::after(clock.now(), Duration::from_secs(2));
 timeout(&clock, deadline, async { do_work().await }).await?;
 # Ok(())
 # }
 # async fn do_work() {}
-# }
 ```
 
 A `Scope` runs a future under its remaining budget and its cancellation at
 once, and `cancelled()` is a cancel-safe future for `select!`:
 
 ```rust
-# #[cfg(feature = "tokio")]
-# {
-use deadline_machines::tokio_support::{deadline_after, ScopeError, TokioClock};
-use deadline_machines::Scope;
-use std::time::Duration;
+use core::time::Duration;
+use deadline_machines::tokio_support::TokioClock;
+use deadline_machines::{Deadline, Refusal, Scope};
 
-# async fn example() -> Result<(), ScopeError> {
+# async fn example() -> Result<(), Refusal> {
 let clock = TokioClock::new();
-let request = Scope::new(deadline_after(&clock, Duration::from_secs(2)));
+let request = Scope::new(Deadline::after(clock.now(), Duration::from_secs(2)));
 let attempt = request.child();
 
 let output = attempt.tokio_timeout(&clock, async { do_work().await }).await?;
-# let _ = output;
+# let () = output;
 # Ok(())
 # }
 # async fn do_work() {}
-# }
 ```
+
+A deadline past the last instant Tokio can represent starts no timer: no
+timer would ever reach it.
 
 The `tokio-util` feature bridges both ways with `tokio_util::CancellationToken`:
 `CancelToken::linked_to(&token)` is cancelled whenever `token` is, and

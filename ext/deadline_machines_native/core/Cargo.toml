@@ -4,22 +4,25 @@ version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
-license = "MIT"
-description = "Monotonic deadline arithmetic and cooperative cancellation trees - no_std, zero dependencies"
+license.workspace = true
+description = "Monotonic deadline arithmetic and cooperative cancellation trees - no_std, allocation-free deadlines"
 repository = "https://github.com/seuros/deadline_machines"
 keywords = ["deadline", "timeout", "cancellation", "resilience", "no-std"]
 categories = ["no-std", "concurrency"]
 readme = "README.md"
-exclude = ["src/**/tests.rs", "tests/"]
+exclude = ["src/**/tests.rs", "src/tests/", "tests/"]
+
 [lib]
 name = "deadline_machines"
 crate-type = ["lib"]
 
 [features]
-default = ["std"]
-std = ["alloc"]
+default = []
+# `CancelToken` and `Scope`: cancellation shared through `Arc`.
 alloc = []
-tokio = ["std", "dep:tokio"]
+# A Tokio clock, timeouts and a cancel-safe `cancelled()` future.
+tokio = ["alloc", "dep:tokio"]
+# Bridges `CancelToken` both ways with `tokio_util::sync::CancellationToken`.
 tokio-util = ["tokio", "dep:tokio-util"]
 
 [dependencies]

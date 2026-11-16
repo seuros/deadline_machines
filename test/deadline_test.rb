@@ -3,320 +3,141 @@
 require 'test_helper'
 
 module DeadlineMachines
+  # The value: native arithmetic through the core, and values that are valid
+  # or do not exist.
   class DeadlineTest < Test
+    MAX = 2**64 - 1
+    # The core's Duration::MAX in nanoseconds.
+    DURATION_MAX = (MAX * 1_000_000_000) + 999_999_999
+
     def test_derive_keeps_the_tighter_bound
-      parent = Deadline.after(5, clock: @clock)
+      parent = Deadline.after(0, 5_000)
 
-      assert_in_delta 1.0, parent.derive(1).remaining
-      assert_in_delta 5.0, parent.derive(9).remaining
-      assert_in_delta 5.0, parent.derive.remaining
+      assert_equal Deadline.at(1_000), parent.derive(0, 1_000)
+      assert_equal parent, parent.derive(0, 9_000)
+      assert_equal Deadline.at(9_000), Deadline.never.derive(0, 9_000)
     end
 
-    def test_derive_without_a_parent_limit_takes_the_child_limit
-      assert_in_delta 2.0, Deadline.never(clock: @clock).derive(2).remaining
-      assert_equal Float::INFINITY, Deadline.never(clock: @clock).derive.remaining
+    def test_tighten_is_commutative_and_absorbs_never
+      a = Deadline.after(0, 10)
+      b = Deadline.after(0, 20)
+
+      assert_equal a, a.tighten(b)
+      assert_equal a, b.tighten(a)
+      assert_equal a, a.tighten(Deadline.never)
+      assert_equal Deadline.never, Deadline.never.tighten(Deadline.never)
     end
 
-    def test_remaining_floors_at_zero_once_expired
-      deadline = Deadline.after(1, clock: @clock)
-      @clock.advance(10)
+    def test_remaining_floors_at_zero_and_never_has_none
+      deadline = Deadline.after(0, 100)
 
-      assert_in_delta 0.0, deadline.remaining
-      assert_predicate deadline, :expired?
+      assert_equal 60, deadline.remaining(40)
+      assert_equal 0, deadline.remaining(400)
+      assert deadline.expired?(100)
+      refute deadline.expired?(99)
+      assert_nil Deadline.never.remaining(DURATION_MAX)
+      refute Deadline.never.expired?(DURATION_MAX)
     end
 
-    def test_a_never_deadline_does_not_expire
-      refute_predicate Deadline.never(clock: @clock), :expired?
-      refute_predicate Deadline.never(clock: @clock), :done?
+    def test_check_answers_a_refusal_symbol_about_that_instant_only
+      deadline = Deadline.after(0, 100)
+
+      assert_nil deadline.check(99)
+      assert_equal :exceeded, deadline.check(100)
+      assert_nil deadline.check(15)
+      assert_equal %i[exceeded cancelled], REFUSALS
+      assert_predicate REFUSALS, :frozen?
     end
 
-    def test_cancellation_flows_down_but_not_up
-      root = Deadline.never(clock: @clock)
-      child = root.derive
-      grandchild = child.derive
-      sibling = root.derive
-
-      child.cancel
-
-      assert_predicate child, :cancelled?
-      assert_predicate grandchild, :cancelled?
-      refute_predicate sibling, :cancelled?
-      refute_predicate root, :cancelled?
-    end
-
-    def test_cancelling_a_parent_reaches_a_child_derived_later
-      root = Deadline.never(clock: @clock)
-      root.cancel
-
-      assert_predicate root.derive, :cancelled?
-    end
-
-    def test_cancel_reason_is_inherited_from_the_nearest_ancestor
-      root = Deadline.never(clock: @clock)
-      grandchild = root.derive.derive
-      root.cancel('client hung up')
-
-      error = assert_raises(Cancelled) { grandchild.check! }
-
-      assert_equal 'client hung up', error.reason
-    end
-
-    def test_on_cancel_fires_once_and_fires_late_registrations_immediately
-      deadline = Deadline.never(clock: @clock)
-      fired = []
-      deadline.on_cancel { fired << :before }
-      deadline.cancel
-      deadline.cancel
-      deadline.on_cancel { fired << :after }
-
-      assert_equal %i[before after], fired
-    end
-
-    def test_cancellation_outranks_expiry_when_both_apply
-      deadline = Deadline.after(1, clock: @clock)
-      deadline.cancel
-      @clock.advance(10)
-
-      assert_raises(Cancelled) { deadline.check! }
-    end
-
-    def test_check_returns_self_while_there_is_budget
-      deadline = Deadline.after(1, clock: @clock)
-
-      assert_same deadline, deadline.check!
+    def test_extend_by_pushes_back_and_sums_saturate_at_the_end_of_time
+      assert_equal Deadline.at(150), Deadline.after(0, 100).extend_by(50)
+      assert_equal Deadline.never, Deadline.never.extend_by(50)
+      assert_equal Deadline.at(DURATION_MAX), Deadline.after(DURATION_MAX, 10)
+      assert_equal Deadline.at(DURATION_MAX), Deadline.at(DURATION_MAX).extend_by(1)
     end
 
     def test_clamp_sleep_never_overruns_the_budget
-      deadline = Deadline.after(1, clock: @clock)
+      deadline = Deadline.after(0, 100)
 
-      assert_in_delta 0.3, deadline.clamp_sleep(0.3)
-      @clock.advance(0.8)
-      assert_in_delta 0.2, deadline.clamp_sleep(0.3)
-      @clock.advance(1)
-      assert_in_delta 0.0, deadline.clamp_sleep(0.3)
-      assert_in_delta 0.3, Deadline.never(clock: @clock).clamp_sleep(0.3)
+      assert_equal 30, deadline.clamp_sleep(0, 30)
+      assert_equal 20, deadline.clamp_sleep(80, 30)
+      assert_equal 0, deadline.clamp_sleep(200, 30)
+      assert_equal 30, Deadline.never.clamp_sleep(0, 30)
     end
 
-    def test_block_form_unlinks_the_child_from_callback_dispatch
-      root = Deadline.never(clock: @clock)
-      fired = false
-      root.derive(1) { |child| child.on_cancel { fired = true } }
-
-      root.cancel
-
-      refute fired
+    def test_a_deadline_holds_nil_or_an_instant_in_the_duration_range
+      assert_nil Deadline.never.expires_at
+      assert_equal DURATION_MAX, Deadline.new(DURATION_MAX).expires_at
+      assert_equal Deadline.new(nil), Deadline.never
+      assert_equal Deadline.new(expires_at: 5), Deadline.at(5)
+      assert_predicate Deadline.at(5), :frozen?
+      assert_equal 'expires_at must be in 0..=Duration::MAX nanoseconds',
+                   assert_raises(RangeError) { Deadline.new(-1) }.message
+      assert_raises(RangeError) { Deadline.new(DURATION_MAX + 1) }
+      assert_equal 'expires_at must be an Integer', assert_raises(TypeError) { Deadline.new(1.5) }.message
     end
 
-    def test_block_form_unlinks_even_when_the_body_raises
-      root = Deadline.never(clock: @clock)
-      fired = false
-      assert_raises(RuntimeError) do
-        root.derive(1) do |child|
-          child.on_cancel { fired = true }
-          raise 'boom'
-        end
+    # Every argument is checked and named before the core runs.
+    def test_arguments_are_integer_nanoseconds_named_for_the_core_parameter
+      deadline = Deadline.at(100)
+      {
+        -> { Deadline.at(-1) } => 'instant',
+        -> { Deadline.after(-1, 0) } => 'now',
+        -> { Deadline.after(0, DURATION_MAX + 1) } => 'timeout',
+        -> { deadline.remaining(-1) } => 'now',
+        -> { deadline.derive(0, -1) } => 'timeout',
+        -> { deadline.extend_by(-1) } => 'by',
+        -> { deadline.clamp_sleep(0, -1) } => 'requested'
+      }.each do |call, name|
+        assert_equal "#{name} must be in 0..=Duration::MAX nanoseconds", assert_raises(RangeError, &call).message
       end
-
-      root.cancel
-
-      refute fired
-    end
-
-    def test_an_unlinked_child_still_reports_the_tree_state
-      root = Deadline.never(clock: @clock)
-      escaped = nil
-      root.derive(1) { |child| escaped = child }
-
-      root.cancel
-
-      assert_predicate escaped, :cancelled?
-    end
-    def test_one_failing_observer_does_not_silence_its_peers
-      fired = []
-      deadline = Deadline.never(clock: @clock)
-      deadline.on_cancel { raise 'observer boom' }
-      deadline.on_cancel { fired << :second }
-
-      assert_raises(RuntimeError) { deadline.cancel }
-
-      assert_equal [:second], fired
-    end
-
-    # Derived deadlines the caller dropped, with nothing left to deliver to
-    # them.
-    DISCARDED = 20_000
-
-    # Registrations raced against a cancellation of the same deadline.
-    RACERS = 2_000
-
-    # A weak map still lists whatever the collector has not reached, including
-    # the local the loop just wrote, so these tests ask that nothing
-    # accumulates rather than that the collector has already run.
-    SETTLED = 16
-
-    # Seconds a test waits for a racing thread before calling it wedged.
-    RENDEZVOUS = 5
-
-    def test_a_derived_deadline_the_caller_dropped_is_not_kept
-      root = Deadline.never(clock: @clock)
-      DISCARDED.times { root.derive(5) }
-      3.times { GC.start }
-
-      assert_settled root
-    end
-
-    def test_a_cancelled_child_is_let_go_of
-      root = Deadline.never(clock: @clock)
-      DISCARDED.times do
-        child = root.derive(5)
-        child.on_cancel { nil }
-        child.cancel
-      end
-      3.times { GC.start }
-
-      assert_settled root
-    end
-
-    def test_a_cancellation_racing_registration_leaves_nothing_retained
-      root = Deadline.never(clock: @clock)
-      RACERS.times do
-        child = root.derive(5)
-        registering = Thread.new { child.on_cancel { nil } }
-        child.cancel
-
-        assert registering.join(RENDEZVOUS), 'a registration never finished'
-      end
-      3.times { GC.start }
-
-      assert_empty root.instance_variable_get(:@retained).keys
-    end
-
-    def test_a_block_scope_that_observed_its_child_leaves_nothing_behind
-      root = Deadline.never(clock: @clock)
-      DISCARDED.times { root.derive(5) { |child| child.on_cancel { nil } } }
-      3.times { GC.start }
-
-      assert_empty root.instance_variable_get(:@retained).keys
-    end
-
-    def test_a_detached_subtree_does_not_reconnect_through_a_descendant
-      root = Deadline.never(clock: @clock)
-      escaped = nil
-      root.derive(5) { |child| escaped = child }
-      deep = escaped.derive(5).derive(5)
-      fired = false
-      deep.on_cancel { fired = true }
-      3.times { GC.start }
-
-      assert_empty root.instance_variable_get(:@retained).keys
-
-      escaped.cancel
-
-      assert fired
-    end
-
-    def test_an_observer_registered_after_a_scope_ended_is_the_callers_own
-      root = Deadline.never(clock: @clock)
-      escaped = nil
-      root.derive(5) { |child| escaped = child }
-      escaped.on_cancel { nil }
-      3.times { GC.start }
-
-      assert_empty root.instance_variable_get(:@retained).keys
-
-      fired = false
-      escaped.on_cancel { fired = true }
-      escaped.cancel
-
-      assert fired
-    end
-
-    def test_a_link_that_still_owes_its_own_observer_is_kept
-      root = Deadline.never(clock: @clock)
-      middle = root.derive(5)
-      seen = []
-      middle.on_cancel { seen << :middle }
-      leaf = middle.derive(5)
-      leaf.on_cancel { nil }
-      leaf.cancel
-      3.times { GC.start }
-
-      assert_equal [middle], root.instance_variable_get(:@retained).keys
-
-      root.cancel
-
-      assert_equal [:middle], seen
-    end
-
-    def test_a_sibling_cancellation_does_not_strand_a_fresh_observer
-      RACERS.times do
-        root = Deadline.never(clock: @clock)
-        middle = root.derive(5)
-        doomed = middle.derive(5)
-        doomed.on_cancel { nil }
-        fired = false
-        killer = Thread.new { doomed.cancel }
-        middle.derive(5).on_cancel { fired = true }
-
-        assert killer.join(RENDEZVOUS), 'a cancellation never finished'
-        root.cancel
-
-        assert fired
+      [-> { deadline.check(0.5) }, -> { deadline.expired?('1') }, -> { Deadline.after(0, 1r) }].each do |call|
+        assert_raises(TypeError, &call)
       end
     end
 
-    def test_an_observer_outlives_every_link_above_it
-      root = Deadline.never(clock: @clock)
-      seen = []
-      ->(parent) { parent.derive(5).derive(5).on_cancel { seen << :deep } }.call(root)
-      3.times { GC.start }
-
-      root.cancel
-
-      assert_equal [:deep], seen
+    def test_values_are_sealed
+      assert_raises(NoMethodError) { Deadline.allocate }
+      assert_raises(TypeError) { Class.new(Deadline) }
     end
 
-    def test_a_cancelled_chain_is_let_go_of_link_by_link
-      root = Deadline.never(clock: @clock)
-      DISCARDED.times do
-        leaf = root.derive(5).derive(5)
-        leaf.on_cancel { nil }
-        leaf.cancel
-      end
-      3.times { GC.start }
+    # The native side is the authority: only exactly a Deadline is read, its
+    # expiry from the struct and checked again, whatever its readers say.
+    def test_the_binding_reads_only_an_exact_deadline_and_rechecks_it
+      deadline = Deadline.at(100)
+      assert_raises(TypeError) { deadline.tighten(100) }
+      assert_raises(TypeError) { deadline.tighten(Struct.new(:expires_at).new(5)) }
 
-      assert_settled root
+      assert_equal 100, with_lying_reader { Deadline.never.tighten(Deadline.at(100)).to_h[:expires_at] }
+
+      # Marshal.load skips initialize: an expiry of -1 gets in, and is
+      # refused the moment the binding reads it.
+      forged = Marshal.load(Marshal.dump(Deadline.at(1)).sub("i\x06".b, "i\xFA".b))
+      assert_equal(-1, forged.expires_at)
+      assert_raises(RangeError) { forged.remaining(0) }
+      assert_raises(RangeError) { Deadline.never.tighten(forged) }
     end
 
-    def test_an_observer_outlives_the_child_reference_the_caller_dropped
-      root = Deadline.never(clock: @clock)
-      seen = []
-      root.derive(5).on_cancel { seen << :fired }
-      3.times { GC.start }
+    # The class is pinned at init, so a compaction moves nothing it builds.
+    def test_every_value_path_survives_gc_compact
+      skip 'GC.compact is not available' unless GC.respond_to?(:compact)
+      GC.compact
 
-      root.cancel
-
-      assert_equal [:fired], seen
-    end
-
-    def test_a_failing_child_observer_does_not_silence_a_sibling
-      seen = []
-      root = Deadline.never(clock: @clock)
-      root.derive(5).on_cancel { raise 'boom' }
-      root.derive(5).on_cancel { seen << :sibling }
-
-      assert_raises(RuntimeError) { root.cancel }
-
-      assert_equal [:sibling], seen
+      assert_equal Deadline.at(5), Deadline.after(0, 5)
+      assert_equal Deadline.at(1), Deadline.at(5).tighten(Deadline.at(1))
+      assert_equal Deadline.never, Deadline.never.extend_by(1)
     end
 
     private
 
-    # Nothing is owed through +root+, and its weak children have not grown with
-    # the number of deadlines the test discarded.
-    def assert_settled(root)
-      assert_empty root.instance_variable_get(:@retained).keys
-      assert_operator root.instance_variable_get(:@children).keys.size, :<, SETTLED
+    # A redefined reader is ignored: the binding reads the struct.
+    def with_lying_reader
+      Deadline.alias_method(:__honest, :expires_at)
+      Deadline.define_method(:expires_at) { 1 }
+      yield
+    ensure
+      Deadline.alias_method(:expires_at, :__honest)
+      Deadline.remove_method(:__honest)
     end
   end
 end

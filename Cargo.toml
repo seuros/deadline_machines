@@ -1,17 +1,28 @@
 [workspace]
-members = ["ext/deadline_machines_native/core"]
+members = ["ext/deadline_machines_native/core", "ext/deadline_machines_native/ffi"]
+default-members = ["ext/deadline_machines_native/core"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
+license = "MIT"
 
 [workspace.dependencies]
 deadline-machines = { path = "ext/deadline_machines_native/core" }
+matryona-machines = { version = ">=0.5", default-features = false }
+magnus = { version = "0.9.3", default-features = false }
+# Nothing here calls rb-sys directly: this is the compiled fallback that
+# implements the stable API for a Ruby rb-sys has no pre-generated bindings
+# for, such as a preview. magnus asks for "stable-api" without it, and
+# default-features = false drops the default that would have supplied it, so
+# removing this line breaks the build on every future Ruby.
+rb-sys = { version = "0.9.130", default-features = false, features = ["stable-api-compiled-fallback"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unused_must_use = "warn"
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

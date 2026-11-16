@@ -3,8 +3,12 @@
 /doc/
 /pkg/
 /tmp/
+/target/
 Gemfile.lock
-
-/ext/**/target
-/ext/**/Cargo.lock
-/target
+/lib/deadline_machines_native/
+/ext/**/Makefile
+/ext/**/mkmf.log
+/ext/**/*.bundle
+/ext/**/*.so
+/ext/**/*.dSYM/
+*.gem

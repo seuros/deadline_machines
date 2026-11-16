@@ -20,30 +20,41 @@ navigates by.
 gem 'deadline_machines'
 ```
 
-Requires **Ruby 4.0+**. Nothing else: no Rust toolchain, no platform gem, no
-compiled extension.
+Requires **Ruby 4.0+**. The budget arithmetic is native: platform gems ship
+precompiled for macOS and Linux, and a source install builds the extension
+with a Rust toolchain.
 
 ---
 
 ## 🎯 Mission Brief
 
-```ruby
-DeadlineMachines.with_deadline(5) do |request|
-  request.remaining        # => 5.0
+Every instant and span is **Integer nanoseconds**, as
+`Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)` reads them.
 
-  request.derive(1) do |attempt|
-    attempt.remaining      # => 1.0
+```ruby
+SECOND = 1_000_000_000
+
+DeadlineMachines.with_deadline(5 * SECOND) do |request|
+  request.remaining        # => 5_000_000_000
+
+  request.derive(SECOND) do |attempt|
+    attempt.remaining      # => 1_000_000_000
+    attempt.check          # => nil, or :exceeded / :cancelled
     attempt.check!         # raises DeadlineMachines::Exceeded when spent
   end
 
-  DeadlineMachines.with_deadline(60) do
-    DeadlineMachines.remaining # => 5.0, a nested scope cannot widen the budget
+  DeadlineMachines.with_deadline(60 * SECOND) do
+    DeadlineMachines.remaining # => 5_000_000_000, a nested scope cannot widen the budget
   end
 
-  request.cancel('client hung up')
+  request.cancel('client hung up') # => :propagated (:already_cancelled on a repeat)
   DeadlineMachines.check!  # raises DeadlineMachines::Cancelled
 end
 ```
+
+The yielded object is a `Scope`: a frozen `Deadline` value plus a
+`CancelToken`, read against `DeadlineMachines.clock`. `remaining` is `nil`
+when there is no limit.
 
 ---
 
@@ -54,7 +65,7 @@ request the caller abandoned twenty-eight seconds ago. `clamp_sleep` is the hook
 that stops it:
 
 ```ruby
-delay = deadline.clamp_sleep(backoff.next_delay) # never overruns what is left
+delay = scope.clamp_sleep(backoff.next_delay_ns) # never overruns what is left
 ```
 
 `DeadlineMachines.current` is fiber-scoped, so `Async` tasks inherit the ambient
@@ -70,32 +81,48 @@ Inject `TestClock` and the whole family becomes deterministic:
 ```ruby
 clock = DeadlineMachines::TestClock.new
 DeadlineMachines.clock = clock
-deadline = DeadlineMachines::Deadline.after(1)
-clock.advance(2)
-deadline.expired? # => true
+scope = DeadlineMachines::Scope.new(DeadlineMachines::Deadline.after(clock.now_ns, 1_000))
+clock.advance(2_000)
+scope.expired? # => true
 ```
+
+`Deadline` itself holds no clock and mirrors the Rust core, `now` first:
+
+```ruby
+deadline = DeadlineMachines::Deadline.after(0, 100)
+deadline.remaining(40)          # => 60
+deadline.check(100)             # => :exceeded
+deadline.clamp_sleep(80, 30)    # => 20
+deadline.tighten(DeadlineMachines::Deadline.never) # => the same deadline
+deadline.extend_by(50)          # the core's `extend`, renamed past Object#extend
+```
+
+A `Deadline` is valid or does not exist: `expires_at` is `nil` or an Integer
+in the core's `Duration` range, checked natively whether the gem built it or
+you did. TypeError for the wrong type, RangeError out of range.
 
 ---
 
 ## 🔻 Cancellation Runs Down the Chain of Command
 
 Cancellation flows down a tree and never up. A child derived after its parent was
-cancelled is already cancelled. `on_cancel` fires once, and a callback registered
-on an already-cancelled deadline fires immediately. The block form of `derive`
-unlinks the child on exit, so a long-lived parent does not accumulate children.
+cancelled is already cancelled, and cancelling it answers `:already_cancelled`
+and changes nothing, its reason included. `on_cancel` fires once, and a callback
+registered on an already-cancelled scope fires immediately. The block forms of
+`derive` and `child` unlink the child on exit, so a long-lived parent does not
+accumulate children. `tighten` and `extend_by` return a scope sharing the same
+token.
 
 ---
 
-## 🔩 The Rust Core, and Why No Extension
+## 🔩 The Rust Core
 
-The same arithmetic and cancellation tree ships as the `deadline-machines` crate
-under `ext/deadline_machines_native/core`, `no_std` with zero dependencies and
-verified on bare metal. `Scope` there is the peer of `Deadline` here: a budget
-and a cancellation handle as one value.
-
-The gem itself is pure Ruby. Reading a monotonic clock is already a vDSO read,
-so there is nothing here worth a native extension. The crate is there for Rust
-consumers, not for this gem's install.
+The arithmetic ships as the `deadline-machines` crate under
+`ext/deadline_machines_native/core`: `no_std`, `Deadline` allocation-free with
+zero dependencies, verified on bare metal. Every `Deadline` operation in this
+gem goes through it. `CancelToken` and `Scope` there (feature `alloc`) are the
+peers of the Ruby classes of the same names; the Ruby ones stay in Ruby
+because they hold Ruby observers, reasons and fiber-bound state.
 
 ---
 

@@ -1,29 +1,49 @@
 # frozen_string_literal: true
 
 require 'bundler/gem_tasks'
-require 'minitest/test_task'
-require 'shellwords'
+require 'rb_sys/extensiontask'
 
-Minitest::TestTask.create(:minitest) do |t|
-  t.libs << 'test'
-  t.libs << 'lib'
-  t.test_globs = ['test/**/*_test.rb']
+GEMSPEC = Gem::Specification.load('deadline_machines.gemspec')
+
+SUPPORTED_NATIVE_PLATFORMS = %w[
+  arm64-darwin
+  x86_64-darwin
+  aarch64-linux
+  x86_64-linux
+  x86_64-linux-musl
+].freeze
+
+native_ext = RbSys::ExtensionTask.new('deadline_machines_native', GEMSPEC) do |ext|
+  ext.lib_dir = 'lib/deadline_machines_native'
+  ext.tmp_dir = 'tmp/rb_sys'
+  ext.cross_platform = SUPPORTED_NATIVE_PLATFORMS if ENV.key?('RUBY_TARGET')
 end
 
-if RUBY_ENGINE == 'ruby'
-  desc 'Run the test suite'
-  task :test do
-    sh 'padded_cell', *Shellwords.split(ENV.fetch('TESTOPTS', ''))
-  end
-else
-  task test: :minitest
+# A single-version cross build stages its binary at the host binary's path,
+# which the gem package depends on, so packaging would also compile for the
+# host and fail where the host linker can't target the platform.
+if ENV.key?('RUBY_TARGET')
+  host_binary = "#{native_ext.lib_dir}/#{native_ext.name}.#{RbConfig::CONFIG['DLEXT']}"
+  Rake::Task[host_binary].clear_prerequisites if Rake::Task.task_defined?(host_binary)
 end
 
-desc 'Run the Rust core crate tests'
+desc 'Compile and run the Ruby tests'
+task test: :compile do
+  sh 'padded_cell'
+end
+
+desc 'Test the Rust core under every feature it ships'
 task :cargo do
-  sh 'cargo', 'test', '--manifest-path', 'ext/deadline_machines_native/core/Cargo.toml'
+  ['', 'alloc', 'tokio', 'tokio-util'].each do |features|
+    sh 'cargo', 'test', '-p', 'deadline-machines', '--no-default-features', '--features', features
+  end
 end
 
-task default: %i[test cargo]
+desc 'Validate the RBS signatures'
+task :rbs do
+  sh 'rbs', '-I', 'sig', 'validate'
+end
+
+task default: %i[test cargo rbs]
 
 Dir[File.join(__dir__, 'tasks/*.rake')].sort.each { |f| load f }
