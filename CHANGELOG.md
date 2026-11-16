@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/seuros/deadline_machines/compare/deadline_machines/v0.1.3...deadline_machines/v0.2.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* split Deadline into a native Data value, Scope and CancelToken
+
+### Features
+
+* split Deadline into a native Data value, Scope and CancelToken ([9a4a4ad](https://github.com/seuros/deadline_machines/commit/9a4a4ad1f51feef7fd88d55b1419eee5e93cf5ff))
+
 ## [0.1.3](https://github.com/seuros/deadline_machines/compare/deadline_machines/v0.1.2...deadline_machines/v0.1.3) (2026-11-06)
 
 
