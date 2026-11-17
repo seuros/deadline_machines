@@ -59,6 +59,10 @@ module DeadlineMachines
     def self.now_ns: () -> Integer
   end
 
+  module ContinuousClock
+    def self.now_ns: () -> Integer
+  end
+
   class TestClock
     attr_reader now_ns: Integer
     def initialize: (?Integer now_ns) -> void

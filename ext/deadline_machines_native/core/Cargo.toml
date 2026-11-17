@@ -24,8 +24,12 @@ alloc = []
 tokio = ["alloc", "dep:tokio"]
 # Bridges `CancelToken` both ways with `tokio_util::sync::CancellationToken`.
 tokio-util = ["tokio", "dep:tokio-util"]
+# `ContinuousClock`: a monotonic clock that keeps counting through suspend.
+# Linux, Android and Apple targets only; anything else fails to compile.
+continuous = ["dep:libc"]
 
 [dependencies]
+libc = { version = "0.2", optional = true, default-features = false }
 tokio = { version = "1", optional = true, default-features = false, features = ["sync", "time"] }
 tokio-util = { version = "0.7", optional = true, default-features = false }
 

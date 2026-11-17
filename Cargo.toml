@@ -20,7 +20,7 @@ magnus = { version = "0.9.3", default-features = false }
 rb-sys = { version = "0.9.130", default-features = false, features = ["stable-api-compiled-fallback"] }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 unused_must_use = "warn"
 missing_docs = "warn"
 

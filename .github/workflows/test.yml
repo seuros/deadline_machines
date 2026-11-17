@@ -54,7 +54,7 @@ jobs:
 
       - name: Lint and test the core under every feature it ships
         run: |
-          for features in "" alloc tokio tokio-util; do
+          for features in "" alloc tokio tokio-util continuous; do
             echo "::group::features: ${features:-none}"
             cargo clippy -p deadline-machines --no-default-features --features "$features" --all-targets -- -D warnings
             cargo test -p deadline-machines --no-default-features --features "$features"

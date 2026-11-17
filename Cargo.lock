@@ -71,6 +71,7 @@ dependencies = [
 name = "deadline-machines"
 version = "0.5.0"
 dependencies = [
+ "libc",
  "tokio",
  "tokio-util",
 ]

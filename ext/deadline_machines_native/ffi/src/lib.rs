@@ -2,8 +2,17 @@
 //!
 //! `DeadlineMachines::Deadline` is a `Data` value defined in Ruby; every
 //! operation on it lives here and goes through the core. The cancellation
-//! tree, the ambient scope and the clock stay in Ruby: they hold Ruby
-//! callbacks and fiber storage, which the core's `Arc` tree cannot.
+//! tree, the ambient scope and the monotonic clock stay in Ruby: they hold
+//! Ruby callbacks and fiber storage, which the core's `Arc` tree cannot.
+//! `ContinuousClock` comes from the core, so FreeBSD's suspend estimate is
+//! the same code in both languages.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "freebsd",
+    target_vendor = "apple"
+))]
+mod continuous;
 mod init;
 
 use core::time::Duration;

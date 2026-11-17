@@ -27,5 +27,12 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("extend_by", method!(extend_by, 1))?;
     class.define_method("tighten", method!(tighten, 1))?;
     class.define_method("clamp_sleep", method!(clamp_sleep, 2))?;
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_vendor = "apple"
+    ))]
+    crate::continuous::define(module)?;
     Ok(())
 }

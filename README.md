@@ -86,6 +86,13 @@ clock.advance(2_000)
 scope.expired? # => true
 ```
 
+`CLOCK_MONOTONIC` naps when the laptop does. To measure how long something
+held across a suspend, use `DeadlineMachines::ContinuousClock.now_ns`, the
+core's `ContinuousClock`: a kernel clock that keeps counting on Linux and
+macOS, and on FreeBSD uptime plus suspend **estimated from the wall clock**
+(no FreeBSD clock counts it; see the core's README). Nanoseconds since the
+extension loaded. Not defined anywhere else: a stand-in that stops would lie.
+
 `Deadline` itself holds no clock and mirrors the Rust core, `now` first:
 
 ```ruby

@@ -100,6 +100,34 @@ let output = attempt.tokio_timeout(&clock, async { do_work().await }).await?;
 A deadline past the last instant Tokio can represent starts no timer: no
 timer would ever reach it.
 
+Tokio's clock, like std's `Instant`, stops while the machine is suspended:
+a laptop that slept through an outage wakes up believing seconds passed. The
+`continuous` feature adds `ContinuousClock`, shaped like `TokioClock`, which
+counts the sleep too: `CLOCK_BOOTTIME` on Linux and Android,
+`CLOCK_MONOTONIC_RAW` (`mach_continuous_time`) on Apple platforms. Any other
+target except FreeBSD fails to compile rather than fall back to a clock that
+stops. Suspend itself is not tested in CI.
+
+FreeBSD has no clock that counts suspend, so there it is estimated from the
+wall clock. Measured with a real S3 on FreeBSD 16.0-CURRENT amd64
+(`zzz`, one sample per second): across the suspend `CLOCK_REALTIME` gained
+65.3 s while `CLOCK_MONOTONIC` (`CLOCK_BOOTTIME` is an alias) and
+`CLOCK_UPTIME` gained 6.8 s each. `ContinuousClock` reads `CLOCK_MONOTONIC`
+and adds every gain of the wall clock over it larger than
+`SUSPEND_TOLERANCE` (2 s). A forward wall-clock step past that tolerance
+reads as sleep; a backward step is never subtracted, so the clock never runs
+back, but it hides that much of the next suspend.
+
+```rust,ignore
+use core::time::Duration;
+use deadline_machines::Deadline;
+use deadline_machines::continuous::ContinuousClock;
+
+let clock = ContinuousClock::new();
+let deadline = Deadline::after(clock.now(), Duration::from_secs(30));
+assert_eq!(deadline.check(clock.now()), Ok(()));
+```
+
 The `tokio-util` feature bridges both ways with `tokio_util::CancellationToken`:
 `CancelToken::linked_to(&token)` is cancelled whenever `token` is, and
 `to_cancellation_token()` hands out one that follows this tree.

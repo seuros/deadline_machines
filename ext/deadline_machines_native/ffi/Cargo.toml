@@ -19,5 +19,8 @@ magnus.workspace = true
 rb-sys.workspace = true
 matryona-machines = { workspace = true, features = ["ruby"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd", target_vendor = "apple"))'.dependencies]
+deadline-machines = { workspace = true, features = ["continuous"] }
+
 [lints]
 workspace = true
