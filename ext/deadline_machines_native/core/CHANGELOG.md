@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/seuros/deadline_machines/compare/deadline-machines-v0.5.0...deadline-machines-v0.6.0) (2026-11-17)
+
+
+### Features
+
+* add a ContinuousClock that keeps counting through suspend ([97d7c6c](https://github.com/seuros/deadline_machines/commit/97d7c6ce0fcdec72e9ed9fd6bc1b60ab19016ae0))
+
 ## [0.5.0](https://github.com/seuros/deadline_machines/compare/deadline-machines-v0.4.0...deadline-machines-v0.5.0) (2026-11-16)
 
 
