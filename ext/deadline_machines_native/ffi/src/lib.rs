@@ -15,12 +15,10 @@
 mod continuous;
 mod init;
 
-use core::time::Duration;
-
 use deadline_machines::{Deadline, Refusal};
 use magnus::{Error, RArray, RClass, RStruct, Ruby, TryConvert, Value, prelude::*};
 use matryona_machines::ruby::{
-    Class, Registry, Symbols, class_name, exact_fields_with, instant, nanoseconds,
+    Class, Registry, Symbols, class_name, exact_fields_with, instant, nanoseconds, optional_instant,
 };
 
 matryona_machines::symbols! {
@@ -38,15 +36,6 @@ fn class(ruby: &Ruby) -> Result<RClass, Error> {
     DEADLINE.get(ruby).map(|class| class.get(ruby))
 }
 
-/// `nil` for never, else an instant over the whole `Duration` range.
-fn expiry(value: Value) -> Result<Option<Duration>, Error> {
-    if value.is_nil() {
-        Ok(None)
-    } else {
-        instant(value, "expires_at").map(Some)
-    }
-}
-
 /// A `DeadlineMachines::Deadline`: exactly that class, its expiry read from
 /// the struct (no reader runs) and checked again, since `Marshal.load` skips
 /// `initialize`.
@@ -57,7 +46,8 @@ fn read(ruby: &Ruby, value: Value) -> Result<Deadline, Error> {
             class_name(value)
         )
     })?;
-    Ok(expiry(expires_at)?.map_or_else(Deadline::never, Deadline::at))
+    let expires_at = optional_instant(expires_at, "expires_at")?;
+    Ok(expires_at.map_or_else(Deadline::never, Deadline::at))
 }
 
 /// `__deadline_of`: the `Deadline` a `Scope` holds, read as every operation
@@ -84,7 +74,7 @@ fn build(ruby: &Ruby, deadline: Deadline) -> Result<Value, Error> {
 
 /// `__deadline`: what a `Deadline` may hold, `nil` or an instant.
 fn validate(value: Value) -> Result<(), Error> {
-    expiry(value).map(drop)
+    optional_instant(value, "expires_at").map(drop)
 }
 
 fn never(ruby: &Ruby) -> Result<Value, Error> {
